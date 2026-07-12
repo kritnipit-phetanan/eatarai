@@ -1,0 +1,57 @@
+export type ChatType = "group" | "room" | "user";
+
+export type ParsedCommand =
+  | { kind: "add"; item: string; source: "explicit" | "mention" }
+  | { kind: "remove"; item: string }
+  | { kind: "show" }
+  | { kind: "confirm"; item: string }
+  | { kind: "stats" }
+  | { kind: "ignore" };
+
+export type ValidationStatus =
+  | "food_place"
+  | "non_food_place"
+  | "no_result"
+  | "ambiguous"
+  | "api_error";
+
+export interface PlaceValidation {
+  status: ValidationStatus;
+  normalizedQuery: string;
+  regionCode: string;
+  languageCode: string;
+  placeId: string | null;
+  displayName: string | null;
+  formattedAddress: string | null;
+  primaryType: string | null;
+  types: string[];
+  source: "cache" | "google" | "local_keyword" | "limit";
+}
+
+export interface RestaurantItem {
+  id: number;
+  chatId: string;
+  name: string;
+  normalizedName: string;
+  source: "google_places" | "cuisine_keyword" | "manual_confirm";
+  googlePlaceId: string | null;
+  matchedName: string | null;
+  matchedAddress: string | null;
+  matchedTypes: string[];
+  createdAt: string;
+}
+
+export interface LineWebhookEvent {
+  type: string;
+  replyToken?: string;
+  source?: {
+    type?: ChatType;
+    groupId?: string;
+    roomId?: string;
+    userId?: string;
+  };
+  message?: {
+    type?: string;
+    text?: string;
+  };
+}
