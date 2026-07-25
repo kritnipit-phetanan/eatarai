@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { LineWebhookEvent } from "./types.js";
+import type { BotReply, LineWebhookEvent } from "./types.js";
 
 export function verifyLineSignature(rawBody: Buffer, signature: string | undefined, channelSecret: string): boolean {
   if (!signature || !channelSecret) return false;
@@ -20,7 +20,7 @@ export function getChatId(event: LineWebhookEvent): string | null {
   return null;
 }
 
-export async function replyLineText(channelAccessToken: string, replyToken: string, text: string): Promise<void> {
+export async function replyLineText(channelAccessToken: string, replyToken: string, reply: BotReply): Promise<void> {
   if (!channelAccessToken) {
     console.warn("LINE_CHANNEL_ACCESS_TOKEN is empty; reply skipped");
     return;
@@ -34,7 +34,11 @@ export async function replyLineText(channelAccessToken: string, replyToken: stri
     },
     body: JSON.stringify({
       replyToken,
-      messages: [{ type: "text", text }]
+      messages: [
+        reply.quickReply
+          ? { type: "text", text: reply.text, quickReply: reply.quickReply }
+          : { type: "text", text: reply.text }
+      ]
     })
   });
 

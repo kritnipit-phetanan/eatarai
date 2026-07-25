@@ -5,13 +5,15 @@ import { parseCommand } from "../src/parser.js";
 const BOT = "เมื่อไรจะไปกิน";
 
 describe("parseCommand", () => {
-  it("parses explicit add commands", () => {
-    assert.deepEqual(parseCommand("เพิ่ม Sukishi", BOT), {
+  it("requires a real bot mention for all commands", () => {
+    assert.deepEqual(parseCommand("เพิ่ม Sukishi", BOT, false), { kind: "ignore" });
+    assert.deepEqual(parseCommand("รายการ", BOT, false), { kind: "ignore" });
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน เพิ่ม Sukishi", BOT, true), {
       kind: "add",
       item: "Sukishi",
       source: "explicit"
     });
-    assert.deepEqual(parseCommand("อยากกิน Hotpot Man", BOT), {
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน อยากกิน Hotpot Man", BOT, true), {
       kind: "add",
       item: "Hotpot Man",
       source: "explicit"
@@ -19,21 +21,25 @@ describe("parseCommand", () => {
   });
 
   it("parses bot mention as add", () => {
-    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน Sukishi", BOT), {
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน Sukishi", BOT, true), {
       kind: "add",
       item: "Sukishi",
       source: "mention"
     });
   });
 
-  it("ignores standalone text without mention", () => {
-    assert.deepEqual(parseCommand("Sukishi", BOT), { kind: "ignore" });
+  it("opens the menu when the bot is mentioned without a command", () => {
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน", BOT, true), { kind: "menu" });
   });
 
-  it("parses show, remove, and confirm commands", () => {
-    assert.deepEqual(parseCommand("รายการ", BOT), { kind: "show" });
-    assert.deepEqual(parseCommand("กิน Sukishi แล้ว", BOT), { kind: "remove", item: "Sukishi" });
-    assert.deepEqual(parseCommand("ลบ Hotpot Man", BOT), { kind: "remove", item: "Hotpot Man" });
-    assert.deepEqual(parseCommand("ยืนยัน Central World", BOT), { kind: "confirm", item: "Central World" });
+  it("ignores standalone text without mention", () => {
+    assert.deepEqual(parseCommand("Sukishi", BOT, false), { kind: "ignore" });
+  });
+
+  it("parses show and remove commands", () => {
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน รายการ", BOT, true), { kind: "show" });
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน กิน Sukishi แล้ว", BOT, true), { kind: "remove", item: "Sukishi" });
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน ลบ Hotpot Man", BOT, true), { kind: "remove", item: "Hotpot Man" });
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน ยืนยัน Central World", BOT, true), { kind: "ignore" });
   });
 });

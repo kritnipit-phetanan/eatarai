@@ -1,11 +1,10 @@
 export type ChatType = "group" | "room" | "user";
 
 export type ParsedCommand =
+  | { kind: "menu" }
   | { kind: "add"; item: string; source: "explicit" | "mention" }
   | { kind: "remove"; item: string }
   | { kind: "show" }
-  | { kind: "confirm"; item: string }
-  | { kind: "stats" }
   | { kind: "ignore" };
 
 export type ValidationStatus =
@@ -25,7 +24,7 @@ export interface PlaceValidation {
   formattedAddress: string | null;
   primaryType: string | null;
   types: string[];
-  source: "cache" | "google" | "local_keyword" | "limit";
+  source: "cache" | "google" | "trusted_alias" | "limit";
 }
 
 export interface RestaurantItem {
@@ -33,12 +32,26 @@ export interface RestaurantItem {
   chatId: string;
   name: string;
   normalizedName: string;
-  source: "google_places" | "cuisine_keyword" | "manual_confirm";
+  source: "google_places" | "trusted_alias" | "manual_confirm";
   googlePlaceId: string | null;
   matchedName: string | null;
   matchedAddress: string | null;
   matchedTypes: string[];
   createdAt: string;
+}
+
+export interface BotReply {
+  text: string;
+  quickReply?: {
+    items: Array<{
+      type: "action";
+      action: {
+        type: "postback";
+        label: string;
+        data: string;
+      };
+    }>;
+  };
 }
 
 export interface LineWebhookEvent {
@@ -53,5 +66,13 @@ export interface LineWebhookEvent {
   message?: {
     type?: string;
     text?: string;
+    mention?: {
+      mentionees?: Array<{
+        isSelf?: boolean;
+      }>;
+    };
+  };
+  postback?: {
+    data?: string;
   };
 }

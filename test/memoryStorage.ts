@@ -6,6 +6,7 @@ export class MemoryStorage implements Storage {
   private items: RestaurantItem[] = [];
   private cache = new Map<string, { validation: PlaceValidation; expiresAt: number }>();
   private calls = new Map<string, number>();
+  private pending = new Map<string, { chatId: string; name: string; expiresAt: number }>();
   private nextId = 1;
 
   async init(): Promise<void> {}
@@ -44,6 +45,19 @@ export class MemoryStorage implements Storage {
     return { item, created: true };
   }
 
+  async createPendingConfirmation(chatId: string, name: string): Promise<string> {
+    const id = `00000000-0000-4000-8000-${String(this.pending.size + 1).padStart(12, "0")}`;
+    this.pending.set(id, { chatId, name: name.trim(), expiresAt: Date.now() + 15 * 60 * 1000 });
+    return id;
+  }
+
+  async takePendingConfirmation(chatId: string, id: string): Promise<string | null> {
+    const pending = this.pending.get(id);
+    if (!pending || pending.chatId !== chatId || pending.expiresAt <= Date.now()) return null;
+    this.pending.delete(id);
+    return pending.name;
+  }
+
   async removeItem(chatId: string, name: string): Promise<boolean> {
     const before = this.items.length;
     const normalizedName = normalizeText(name);
@@ -72,21 +86,12 @@ export class MemoryStorage implements Storage {
     });
   }
 
-  async incrementGoogleCall(chatId: string): Promise<void> {
-    this.calls.set(chatId, (this.calls.get(chatId) ?? 0) + 1);
-  }
-
-  async googleCallsToday(chatId?: string): Promise<number> {
-    if (chatId) return this.calls.get(chatId) ?? 0;
-    return [...this.calls.values()].reduce((sum, count) => sum + count, 0);
-  }
-
-  async cacheStats(): Promise<{ total: number; active: number }> {
-    const now = Date.now();
-    return {
-      total: this.cache.size,
-      active: [...this.cache.values()].filter((entry) => entry.expiresAt > now).length
-    };
+  async tryReserveGoogleCall(chatId: string, globalLimit: number, groupLimit: number): Promise<boolean> {
+    const globalCalls = [...this.calls.values()].reduce((sum, count) => sum + count, 0);
+    const groupCalls = this.calls.get(chatId) ?? 0;
+    if (globalCalls >= globalLimit || groupCalls >= groupLimit) return false;
+    this.calls.set(chatId, groupCalls + 1);
+    return true;
   }
 }
 

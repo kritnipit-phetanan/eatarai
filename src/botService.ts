@@ -1,9 +1,9 @@
 import { normalizeText } from "./normalize.js";
 import type { AppConfig } from "./config.js";
 import type { GooglePlacesClient, GooglePlacesConfig } from "./googlePlaces.js";
-import { validateLocalKeyword } from "./googlePlaces.js";
+import { validateTrustedAlias } from "./googlePlaces.js";
 import type { Storage } from "./storage.js";
-import type { ParsedCommand, PlaceValidation, RestaurantItem } from "./types.js";
+import type { BotReply, ParsedCommand, PlaceValidation, RestaurantItem } from "./types.js";
 
 export class BotService {
   private placesConfig: GooglePlacesConfig;
@@ -21,31 +21,49 @@ export class BotService {
     };
   }
 
-  async handleCommand(chatId: string, command: ParsedCommand): Promise<string | null> {
+  async handleCommand(chatId: string, command: ParsedCommand): Promise<BotReply | null> {
     switch (command.kind) {
       case "ignore":
         return null;
+      case "menu":
+        return this.menuReply();
       case "show":
-        return this.formatList(chatId);
-      case "stats":
-        return this.formatStats(chatId);
+        return this.textReply(await this.formatList(chatId));
       case "remove":
-        return this.removeItem(chatId, command.item);
-      case "confirm":
-        return this.confirmItem(chatId, command.item);
+        return this.textReply(await this.removeItem(chatId, command.item));
       case "add":
         return this.addWithValidation(chatId, command.item);
     }
   }
 
-  private async addWithValidation(chatId: string, rawName: string): Promise<string> {
-    const name = rawName.trim();
-    if (!name) return "พิมพ์ชื่อร้านหรืออาหารที่อยากเพิ่มอีกครั้ง";
+  async handlePostback(chatId: string, data: string): Promise<BotReply | null> {
+    if (data === "menu:list") return this.textReply(await this.formatList(chatId));
+    if (data === "menu:add") return this.textReply("พิมพ์: @เมื่อไรจะไปกิน เพิ่ม <ชื่อร้าน>");
+    if (data === "menu:remove") return this.textReply("พิมพ์: @เมื่อไรจะไปกิน ลบ <ชื่อร้าน>");
 
-    const local = validateLocalKeyword(name, this.placesConfig);
+    const match = /^(confirm|cancel):([0-9a-f-]{36})$/i.exec(data);
+    if (!match) return null;
+
+    const action = match[1];
+    const id = match[2];
+    if (!action || !id) return null;
+
+    const name = await this.storage.takePendingConfirmation(chatId, id);
+    if (!name) return this.textReply("รายการยืนยันหมดอายุหรือถูกดำเนินการไปแล้ว");
+    if (action === "cancel") return this.textReply(`ยกเลิกการเพิ่ม "${name}" แล้ว`);
+
+    await this.storage.addItem(chatId, name, "manual_confirm", null);
+    return this.textReply(await this.formatList(chatId));
+  }
+
+  private async addWithValidation(chatId: string, rawName: string): Promise<BotReply> {
+    const name = rawName.trim();
+    if (!name) return this.textReply("พิมพ์ชื่อร้านหรืออาหารที่อยากเพิ่มอีกครั้ง");
+
+    const local = validateTrustedAlias(name, this.placesConfig);
     if (local) {
-      await this.storage.addItem(chatId, name, "cuisine_keyword", local);
-      return this.formatList(chatId);
+      await this.storage.addItem(chatId, name, "trusted_alias", local);
+      return this.textReply(await this.formatList(chatId));
     }
 
     const normalizedQuery = normalizeText(name);
@@ -59,16 +77,13 @@ export class BotService {
       return this.handleValidationResult(chatId, name, cached);
     }
 
-    const globalCalls = await this.storage.googleCallsToday();
-    const groupCalls = await this.storage.googleCallsToday(chatId);
-    if (
-      globalCalls >= this.config.googleDailyValidationLimit ||
-      groupCalls >= this.config.googleGroupDailyValidationLimit
-    ) {
-      return [
-        "โควตาตรวจร้านวันนี้เต็มแล้ว",
-        `ถ้าจะเพิ่ม "${name}" เอง พิมพ์: ยืนยัน ${name}`
-      ].join("\n");
+    const reservedGoogleCall = await this.storage.tryReserveGoogleCall(
+      chatId,
+      this.config.googleDailyValidationLimit,
+      this.config.googleGroupDailyValidationLimit
+    );
+    if (!reservedGoogleCall) {
+      return this.confirmationReply(chatId, name, "โควตาตรวจร้านวันนี้เต็มแล้ว");
     }
 
     const startedAt = Date.now();
@@ -90,7 +105,6 @@ export class BotService {
       };
     }
 
-    await this.storage.incrementGoogleCall(chatId);
     await this.storage.saveCache(validation);
     console.info(
       JSON.stringify({
@@ -106,31 +120,48 @@ export class BotService {
     return this.handleValidationResult(chatId, name, validation);
   }
 
-  private async handleValidationResult(chatId: string, requestedName: string, validation: PlaceValidation): Promise<string> {
+  private async handleValidationResult(chatId: string, requestedName: string, validation: PlaceValidation): Promise<BotReply> {
     if (validation.status === "food_place") {
       const displayName = validation.displayName ?? requestedName;
-      await this.storage.addItem(chatId, displayName, validation.source === "local_keyword" ? "cuisine_keyword" : "google_places", validation);
-      return this.formatList(chatId);
+      await this.storage.addItem(chatId, displayName, validation.source === "trusted_alias" ? "trusted_alias" : "google_places", validation);
+      return this.textReply(await this.formatList(chatId));
     }
 
     if (validation.status === "api_error") {
-      return [
-        `ตรวจ "${requestedName}" กับ Google Places ไม่สำเร็จ`,
-        `ลองใหม่อีกครั้ง หรือถ้าจะเพิ่มเอง พิมพ์: ยืนยัน ${requestedName}`
-      ].join("\n");
+      return this.confirmationReply(chatId, requestedName, `ตรวจ "${requestedName}" กับ Google Places ไม่สำเร็จ`);
     }
 
-    return [
-      `ไม่แน่ใจว่า "${requestedName}" เป็นร้าน/อาหาร`,
-      `ถ้าจะเพิ่มจริง พิมพ์: ยืนยัน ${requestedName}`
-    ].join("\n");
+    return this.confirmationReply(chatId, requestedName, `ไม่แน่ใจว่า "${requestedName}" เป็นร้าน/อาหาร`);
   }
 
-  private async confirmItem(chatId: string, name: string): Promise<string> {
-    const trimmed = name.trim();
-    if (!trimmed) return "พิมพ์ชื่อที่จะยืนยันอีกครั้ง เช่น ยืนยัน Sukishi";
-    await this.storage.addItem(chatId, trimmed, "manual_confirm", null);
-    return this.formatList(chatId);
+  private async confirmationReply(chatId: string, name: string, message: string): Promise<BotReply> {
+    const id = await this.storage.createPendingConfirmation(chatId, name);
+    return {
+      text: message,
+      quickReply: {
+        items: [
+          { type: "action", action: { type: "postback", label: "ยืนยันเพิ่ม", data: `confirm:${id}` } },
+          { type: "action", action: { type: "postback", label: "ยกเลิก", data: `cancel:${id}` } }
+        ]
+      }
+    };
+  }
+
+  private textReply(text: string): BotReply {
+    return { text };
+  }
+
+  private menuReply(): BotReply {
+    return {
+      text: "เลือกสิ่งที่ต้องการ",
+      quickReply: {
+        items: [
+          { type: "action", action: { type: "postback", label: "ดูรายการ", data: "menu:list" } },
+          { type: "action", action: { type: "postback", label: "เพิ่มรายการ", data: "menu:add" } },
+          { type: "action", action: { type: "postback", label: "ลดรายการ", data: "menu:remove" } }
+        ]
+      }
+    };
   }
 
   private async removeItem(chatId: string, name: string): Promise<string> {
@@ -148,15 +179,4 @@ export class BotService {
     return ["รายการที่อยากกิน:", ...items.map((item: RestaurantItem, index) => `${index + 1}. ${item.name}`)].join("\n");
   }
 
-  private async formatStats(chatId: string): Promise<string> {
-    const cache = await this.storage.cacheStats();
-    const globalCalls = await this.storage.googleCallsToday();
-    const groupCalls = await this.storage.googleCallsToday(chatId);
-    return [
-      "สถิติวันนี้:",
-      `- Google calls ทั้งหมด: ${globalCalls}`,
-      `- Google calls กลุ่มนี้: ${groupCalls}`,
-      `- Cache active/total: ${cache.active}/${cache.total}`
-    ].join("\n");
-  }
 }

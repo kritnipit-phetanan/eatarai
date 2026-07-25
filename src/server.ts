@@ -65,18 +65,23 @@ async function handleLineWebhook(req: IncomingMessage, res: ServerResponse): Pro
 }
 
 async function handleLineEvent(event: LineWebhookEvent): Promise<void> {
-  if (event.type !== "message" || event.message?.type !== "text" || !event.message.text || !event.replyToken) {
+  const chatId = getChatId(event);
+  if (!chatId || !event.replyToken) return;
+
+  if (event.type === "postback" && event.postback?.data) {
+    const response = await bot.handlePostback(chatId, event.postback.data);
+    if (response) await replyLineText(config.lineChannelAccessToken, event.replyToken, response);
     return;
   }
 
-  const chatId = getChatId(event);
-  if (!chatId) return;
+  if (event.type !== "message" || event.message?.type !== "text" || !event.message.text) return;
 
-  const command = parseCommand(event.message.text, config.botDisplayName);
-  const responseText = await bot.handleCommand(chatId, command);
-  if (!responseText) return;
+  const isBotMentioned = event.message.mention?.mentionees?.some((mentionee) => mentionee.isSelf === true) ?? false;
+  const command = parseCommand(event.message.text, config.botDisplayName, isBotMentioned);
+  const response = await bot.handleCommand(chatId, command);
+  if (!response) return;
 
-  await replyLineText(config.lineChannelAccessToken, event.replyToken, responseText);
+  await replyLineText(config.lineChannelAccessToken, event.replyToken, response);
 }
 
 function readBody(req: IncomingMessage): Promise<Buffer> {

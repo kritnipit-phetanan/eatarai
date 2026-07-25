@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { normalizeText } from "./normalize.js";
 import { CACHE_TTL_SECONDS, type Storage } from "./storage.js";
@@ -71,6 +72,26 @@ export class PostgresStorage implements Storage {
     return { item, created: false };
   }
 
+  async createPendingConfirmation(chatId: string, name: string): Promise<string> {
+    const id = randomUUID();
+    await this.pool.query(
+      `INSERT INTO pending_confirmations (id, chat_id, name, expires_at, created_at)
+       VALUES ($1, $2, $3, now() + interval '15 minutes', now())`,
+      [id, chatId, name.trim()]
+    );
+    return id;
+  }
+
+  async takePendingConfirmation(chatId: string, id: string): Promise<string | null> {
+    const result = await this.pool.query<{ name: string }>(
+      `DELETE FROM pending_confirmations
+       WHERE id = $1 AND chat_id = $2 AND expires_at > now()
+       RETURNING name`,
+      [id, chatId]
+    );
+    return result.rows[0]?.name ?? null;
+  }
+
   async removeItem(chatId: string, name: string): Promise<boolean> {
     const result = await this.pool.query("DELETE FROM restaurant_items WHERE chat_id = $1 AND normalized_name = $2", [
       chatId,
@@ -133,40 +154,43 @@ export class PostgresStorage implements Storage {
     );
   }
 
-  async incrementGoogleCall(chatId: string): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO google_call_log (chat_id, day, call_count, created_at, updated_at)
-       VALUES ($1, current_date, 1, now(), now())
-       ON CONFLICT(chat_id, day) DO UPDATE SET
-         call_count = google_call_log.call_count + 1,
-         updated_at = now()`,
-      [chatId]
-    );
-  }
+  async tryReserveGoogleCall(chatId: string, globalLimit: number, groupLimit: number): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [20260720]);
 
-  async googleCallsToday(chatId?: string): Promise<number> {
-    if (chatId) {
-      const result = await this.pool.query<{ call_count: number }>(
+      const globalResult = await client.query<{ call_count: number }>(
+        "SELECT COALESCE(SUM(call_count), 0)::int AS call_count FROM google_call_log WHERE day = current_date"
+      );
+      const groupResult = await client.query<{ call_count: number }>(
         "SELECT call_count FROM google_call_log WHERE chat_id = $1 AND day = current_date",
         [chatId]
       );
-      return Number(result.rows[0]?.call_count ?? 0);
+      const globalCalls = Number(globalResult.rows[0]?.call_count ?? 0);
+      const groupCalls = Number(groupResult.rows[0]?.call_count ?? 0);
+
+      if (globalCalls >= globalLimit || groupCalls >= groupLimit) {
+        await client.query("ROLLBACK");
+        return false;
+      }
+
+      await client.query(
+        `INSERT INTO google_call_log (chat_id, day, call_count, created_at, updated_at)
+         VALUES ($1, current_date, 1, now(), now())
+         ON CONFLICT(chat_id, day) DO UPDATE SET
+           call_count = google_call_log.call_count + 1,
+           updated_at = now()`,
+        [chatId]
+      );
+      await client.query("COMMIT");
+      return true;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
     }
-
-    const result = await this.pool.query<{ call_count: number }>(
-      "SELECT COALESCE(SUM(call_count), 0)::int AS call_count FROM google_call_log WHERE day = current_date"
-    );
-    return Number(result.rows[0]?.call_count ?? 0);
-  }
-
-  async cacheStats(): Promise<{ total: number; active: number }> {
-    const result = await this.pool.query<{ total: number; active: number }>(
-      `SELECT
-        COUNT(*)::int AS total,
-        SUM(CASE WHEN expires_at > now() THEN 1 ELSE 0 END)::int AS active
-       FROM place_validation_cache`
-    );
-    return { total: Number(result.rows[0]?.total ?? 0), active: Number(result.rows[0]?.active ?? 0) };
   }
 
   private async getItemByNormalizedName(chatId: string, normalizedName: string): Promise<RestaurantItem | null> {
@@ -232,6 +256,14 @@ export class PostgresStorage implements Storage {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (chat_id, day)
+      );
+
+      CREATE TABLE IF NOT EXISTS pending_confirmations (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
     `);
   }

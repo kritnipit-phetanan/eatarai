@@ -8,7 +8,7 @@
     "node": ">=22.5.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp trustedRestaurantAliases.json dist/trustedRestaurantAliases.json",
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "test": "npm run build && node --test dist/test/*.test.js",

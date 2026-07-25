@@ -1,4 +1,4 @@
-import { isCuisineKeyword } from "./cuisine.js";
+import { isTrustedRestaurantAlias } from "./trustedAliases.js";
 import { normalizeText } from "./normalize.js";
 import type { PlaceValidation, ValidationStatus } from "./types.js";
 
@@ -47,7 +47,7 @@ export class FetchGooglePlacesClient implements GooglePlacesClient {
     }
 
     const body: Record<string, unknown> = {
-      textQuery: `${query} Thailand`,
+      textQuery: query,
       regionCode: config.regionCode,
       languageCode: config.languageCode
     };
@@ -75,8 +75,8 @@ export class FetchGooglePlacesClient implements GooglePlacesClient {
   }
 }
 
-export function validateLocalKeyword(query: string, config: GooglePlacesConfig): PlaceValidation | null {
-  if (!isCuisineKeyword(query)) return null;
+export function validateTrustedAlias(query: string, config: GooglePlacesConfig): PlaceValidation | null {
+  if (!isTrustedRestaurantAlias(query)) return null;
 
   return {
     status: "food_place",
@@ -86,9 +86,9 @@ export function validateLocalKeyword(query: string, config: GooglePlacesConfig):
     placeId: null,
     displayName: query.trim(),
     formattedAddress: null,
-    primaryType: "cuisine_keyword",
-    types: ["cuisine_keyword"],
-    source: "local_keyword"
+    primaryType: "trusted_restaurant_alias",
+    types: ["trusted_restaurant_alias"],
+    source: "trusted_alias"
   };
 }
 
