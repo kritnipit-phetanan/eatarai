@@ -1,16 +1,13 @@
-import { isTrustedRestaurantAlias } from "./trustedAliases.js";
-import { normalizeText } from "./normalize.js";
-import type { PlaceValidation, ValidationStatus } from "./types.js";
+import type { PlaceValidation } from "./types.js";
 
 export interface GooglePlacesConfig {
   apiKey: string;
   regionCode: string;
   languageCode: string;
-  locationBias: string;
 }
 
 export interface GooglePlacesClient {
-  searchText(query: string, config: GooglePlacesConfig): Promise<PlaceValidation>;
+  searchLocations(query: string, latitude: number, longitude: number, config: GooglePlacesConfig): Promise<PlaceValidation[]>;
 }
 
 const FOOD_TYPES = new Set([
@@ -29,32 +26,19 @@ const FOOD_TYPES = new Set([
   "pub"
 ]);
 
-const NON_FOOD_HINTS = new Set([
-  "shopping_mall",
-  "school",
-  "university",
-  "office",
-  "hotel",
-  "lodging",
-  "store",
-  "department_store"
-]);
-
 export class FetchGooglePlacesClient implements GooglePlacesClient {
-  async searchText(query: string, config: GooglePlacesConfig): Promise<PlaceValidation> {
+  async searchLocations(query: string, latitude: number, longitude: number, config: GooglePlacesConfig): Promise<PlaceValidation[]> {
     if (!config.apiKey) {
-      return makeValidation("api_error", query, config, null, "Missing GOOGLE_MAPS_API_KEY");
+      throw new Error("Missing GOOGLE_MAPS_API_KEY");
     }
 
     const body: Record<string, unknown> = {
       textQuery: query,
       regionCode: config.regionCode,
-      languageCode: config.languageCode
+      languageCode: config.languageCode,
+      pageSize: 3,
+      locationBias: { circle: { center: { latitude, longitude }, radius: 50000 } }
     };
-
-    if (config.locationBias) {
-      body.locationBias = parseLocationBias(config.locationBias);
-    }
 
     const response = await fetch("https://places.googleapis.com/v1/places:searchText", {
       method: "POST",
@@ -67,98 +51,27 @@ export class FetchGooglePlacesClient implements GooglePlacesClient {
     });
 
     if (!response.ok) {
-      return makeValidation("api_error", query, config, null, `Google Places returned ${response.status}`);
+      throw new Error(`Google Places returned ${response.status}`);
     }
 
     const payload = (await response.json()) as GoogleTextSearchResponse;
-    return classifyPlaces(query, config, payload.places ?? []);
+    return (payload.places ?? []).flatMap(toPlaceValidation);
   }
 }
 
-export function validateTrustedAlias(query: string, config: GooglePlacesConfig): PlaceValidation | null {
-  if (!isTrustedRestaurantAlias(query)) return null;
-
-  return {
-    status: "food_place",
-    normalizedQuery: normalizeText(query),
-    regionCode: config.regionCode,
-    languageCode: config.languageCode,
-    placeId: null,
-    displayName: query.trim(),
-    formattedAddress: null,
-    primaryType: "trusted_restaurant_alias",
-    types: ["trusted_restaurant_alias"],
-    source: "trusted_alias"
-  };
-}
-
-export function classifyPlaces(
-  query: string,
-  config: GooglePlacesConfig,
-  places: GooglePlace[]
-): PlaceValidation {
-  if (places.length === 0) {
-    return makeValidation("no_result", query, config, null);
-  }
-
-  const top = places[0];
-  if (!top) return makeValidation("no_result", query, config, null);
-
-  const types = top.types ?? [];
-  const primaryType = top.primaryType ?? null;
+function toPlaceValidation(place: GooglePlace): PlaceValidation[] {
+  const types = place.types ?? [];
+  const primaryType = place.primaryType ?? null;
   const allTypes = new Set([primaryType, ...types].filter((type): type is string => Boolean(type)));
-  const hasFoodType = [...allTypes].some((type) => FOOD_TYPES.has(type) || type.endsWith("_restaurant"));
-
-  let status: ValidationStatus;
-  if (hasFoodType) {
-    status = "food_place";
-  } else if ([...allTypes].some((type) => NON_FOOD_HINTS.has(type))) {
-    status = "non_food_place";
-  } else {
-    status = "ambiguous";
-  }
-
-  return {
-    status,
-    normalizedQuery: normalizeText(query),
-    regionCode: config.regionCode,
-    languageCode: config.languageCode,
-    placeId: top.id ?? null,
-    displayName: top.displayName?.text ?? null,
-    formattedAddress: top.formattedAddress ?? null,
+  const isFoodPlace = [...allTypes].some((type) => FOOD_TYPES.has(type) || type.endsWith("_restaurant"));
+  if (!isFoodPlace || !place.id) return [];
+  return [{
+    placeId: place.id,
+    displayName: place.displayName?.text ?? null,
+    formattedAddress: place.formattedAddress ?? null,
     primaryType,
-    types,
-    source: "google"
-  };
-}
-
-function makeValidation(
-  status: ValidationStatus,
-  query: string,
-  config: GooglePlacesConfig,
-  place: GooglePlace | null,
-  error?: string
-): PlaceValidation {
-  return {
-    status,
-    normalizedQuery: normalizeText(query),
-    regionCode: config.regionCode,
-    languageCode: config.languageCode,
-    placeId: place?.id ?? null,
-    displayName: place?.displayName?.text ?? null,
-    formattedAddress: error ?? place?.formattedAddress ?? null,
-    primaryType: place?.primaryType ?? null,
-    types: place?.types ?? [],
-    source: "google"
-  };
-}
-
-function parseLocationBias(value: string): unknown {
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return undefined;
-  }
+    types
+  }];
 }
 
 interface GoogleTextSearchResponse {

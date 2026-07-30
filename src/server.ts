@@ -74,7 +74,15 @@ async function handleLineEvent(event: LineWebhookEvent): Promise<void> {
     return;
   }
 
-  if (event.type !== "message" || event.message?.type !== "text" || !event.message.text) return;
+  if (event.type !== "message") return;
+
+  if (event.message?.type === "location" && event.message.latitude !== undefined && event.message.longitude !== undefined) {
+    const response = await bot.handleLocation(chatId, event.message.latitude, event.message.longitude);
+    if (response) await replyLineText(config.lineChannelAccessToken, event.replyToken, response);
+    return;
+  }
+
+  if (event.message?.type !== "text" || !event.message.text) return;
 
   const isBotMentioned = event.message.mention?.mentionees?.some((mentionee) => mentionee.isSelf === true) ?? false;
   const command = parseCommand(event.message.text, config.botDisplayName, isBotMentioned);

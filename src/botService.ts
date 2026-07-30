@@ -1,9 +1,7 @@
-import { normalizeText } from "./normalize.js";
 import type { AppConfig } from "./config.js";
 import type { GooglePlacesClient, GooglePlacesConfig } from "./googlePlaces.js";
-import { validateTrustedAlias } from "./googlePlaces.js";
 import type { Storage } from "./storage.js";
-import type { BotReply, ParsedCommand, PlaceValidation, RestaurantItem } from "./types.js";
+import type { BotReply, ParsedCommand, RestaurantItem } from "./types.js";
 
 export class BotService {
   private placesConfig: GooglePlacesConfig;
@@ -16,8 +14,7 @@ export class BotService {
     this.placesConfig = {
       apiKey: config.googleMapsApiKey,
       regionCode: config.googleRegionCode,
-      languageCode: config.googleLanguageCode,
-      locationBias: config.googleLocationBias
+      languageCode: config.googleLanguageCode
     };
   }
 
@@ -28,120 +25,99 @@ export class BotService {
       case "menu":
         return this.menuReply();
       case "show":
-        return this.textReply(await this.formatList(chatId));
+        return this.listReply(chatId);
       case "remove":
         return this.textReply(await this.removeItem(chatId, command.item));
+      case "map_link":
+        return this.beginMapLinkSelection(chatId, command.item);
       case "add":
-        return this.addWithValidation(chatId, command.item);
+        return this.addItem(chatId, command.item);
     }
   }
 
   async handlePostback(chatId: string, data: string): Promise<BotReply | null> {
-    if (data === "menu:list") return this.textReply(await this.formatList(chatId));
+    if (data === "menu:list") return this.listReply(chatId);
     if (data === "menu:add") return this.textReply("พิมพ์: @เมื่อไรจะไปกิน เพิ่ม <ชื่อร้าน>");
     if (data === "menu:remove") return this.textReply("พิมพ์: @เมื่อไรจะไปกิน ลบ <ชื่อร้าน>");
+    if (data === "menu:map-link") return this.textReply("พิมพ์: @เมื่อไรจะไปกิน เพิ่มลิงก์แผนที่ <ชื่อร้าน>");
 
-    const match = /^(confirm|cancel):([0-9a-f-]{36})$/i.exec(data);
+    const match = /^map-link:([0-9a-f-]{36})$/i.exec(data);
     if (!match) return null;
 
-    const action = match[1];
-    const id = match[2];
-    if (!action || !id) return null;
+    const id = match[1];
+    if (!id) return null;
 
-    const name = await this.storage.takePendingConfirmation(chatId, id);
-    if (!name) return this.textReply("รายการยืนยันหมดอายุหรือถูกดำเนินการไปแล้ว");
-    if (action === "cancel") return this.textReply(`ยกเลิกการเพิ่ม "${name}" แล้ว`);
+    const pending = await this.storage.takePendingMapLink(chatId, id);
+    if (!pending) return this.textReply("ตัวเลือกลิงก์หมดอายุหรือถูกดำเนินการไปแล้ว");
 
-    await this.storage.addItem(chatId, name, "manual_confirm", null);
-    return this.textReply(await this.formatList(chatId));
+    const saved = await this.storage.setItemPlace(chatId, pending.itemId, pending.place);
+    if (!saved) return this.textReply("ไม่พบรายการร้านนี้ในแชตนี้แล้ว");
+
+    const name = pending.place.displayName ?? "สถานที่ที่เลือก";
+    const mapsUrl = googleMapsUrl(name, pending.place.placeId);
+    return this.textReply([`เพิ่มลิงก์แผนที่ของ ${name} แล้ว`, pending.place.formattedAddress, mapsUrl].filter(Boolean).join("\n"));
   }
 
-  private async addWithValidation(chatId: string, rawName: string): Promise<BotReply> {
-    const name = rawName.trim();
-    if (!name) return this.textReply("พิมพ์ชื่อร้านหรืออาหารที่อยากเพิ่มอีกครั้ง");
-
-    const local = validateTrustedAlias(name, this.placesConfig);
-    if (local) {
-      await this.storage.addItem(chatId, name, "trusted_alias", local);
-      return this.textReply(await this.formatList(chatId));
-    }
-
-    const normalizedQuery = normalizeText(name);
-    const cached = await this.storage.getValidCache(
-      normalizedQuery,
-      this.config.googleRegionCode,
-      this.config.googleLanguageCode
-    );
-
-    if (cached) {
-      return this.handleValidationResult(chatId, name, cached);
-    }
+  async handleLocation(chatId: string, latitude: number, longitude: number): Promise<BotReply | null> {
+    const item = await this.storage.takeMapLinkSelection(chatId);
+    if (!item) return null;
 
     const reservedGoogleCall = await this.storage.tryReserveGoogleCall(
       chatId,
       this.config.googleDailyValidationLimit,
       this.config.googleGroupDailyValidationLimit
     );
-    if (!reservedGoogleCall) {
-      return this.confirmationReply(chatId, name, "โควตาตรวจร้านวันนี้เต็มแล้ว");
-    }
+    if (!reservedGoogleCall) return this.textReply("โควต้าค้นหาสถานที่วันนี้เต็มแล้ว ลองใหม่พรุ่งนี้");
 
     const startedAt = Date.now();
-    let validation: PlaceValidation;
     try {
-      validation = await this.googlePlaces.searchText(name, this.placesConfig);
-    } catch (error) {
-      validation = {
-        status: "api_error",
-        normalizedQuery,
-        regionCode: this.config.googleRegionCode,
-        languageCode: this.config.googleLanguageCode,
-        placeId: null,
-        displayName: null,
-        formattedAddress: error instanceof Error ? error.message : "Unknown Google Places error",
-        primaryType: null,
-        types: [],
-        source: "google"
+      const places = await this.googlePlaces.searchLocations(item.name, latitude, longitude, this.placesConfig);
+      console.info(JSON.stringify({ event: "google_places_map_link_search", query: item.name, latencyMs: Date.now() - startedAt }));
+      if (places.length === 0) return this.textReply(`ไม่พบสถานที่ของ "${item.name}" ใกล้ตำแหน่งนี้`);
+
+      const choices = await Promise.all(
+        places.map(async (place) => ({
+          place,
+          id: await this.storage.createPendingMapLink(chatId, item.id, place)
+        }))
+      );
+      return {
+        text: `เลือกสถานที่สำหรับลิงก์แผนที่ของ ${item.name}`,
+        quickReply: {
+          items: choices.map(({ place, id }) => ({
+            type: "action" as const,
+            action: {
+              type: "postback" as const,
+              label: quickReplyLabel(place.displayName ?? item.name, place.formattedAddress),
+              data: `map-link:${id}`
+            }
+          }))
+        }
       };
+    } catch (error) {
+      console.error(JSON.stringify({ event: "google_places_map_link_search_failed", query: item.name, error: String(error) }));
+      return this.textReply("ค้นหาสถานที่ไม่สำเร็จ ลองใหม่ภายหลัง");
     }
-
-    await this.storage.saveCache(validation);
-    console.info(
-      JSON.stringify({
-        event: "google_places_validation",
-        query: name,
-        cache: "miss",
-        status: validation.status,
-        latencyMs: Date.now() - startedAt,
-        skuIntent: "text_search_pro"
-      })
-    );
-
-    return this.handleValidationResult(chatId, name, validation);
   }
 
-  private async handleValidationResult(chatId: string, requestedName: string, validation: PlaceValidation): Promise<BotReply> {
-    if (validation.status === "food_place") {
-      const displayName = validation.displayName ?? requestedName;
-      await this.storage.addItem(chatId, displayName, validation.source === "trusted_alias" ? "trusted_alias" : "google_places", validation);
-      return this.textReply(await this.formatList(chatId));
-    }
+  private async addItem(chatId: string, rawName: string): Promise<BotReply> {
+    const name = rawName.trim();
+    if (!name) return this.textReply("พิมพ์ชื่อร้านหรืออาหารที่อยากเพิ่มอีกครั้ง");
 
-    if (validation.status === "api_error") {
-      return this.confirmationReply(chatId, requestedName, `ตรวจ "${requestedName}" กับ Google Places ไม่สำเร็จ`);
-    }
-
-    return this.confirmationReply(chatId, requestedName, `ไม่แน่ใจว่า "${requestedName}" เป็นร้าน/อาหาร`);
+    await this.storage.addItem(chatId, name, "user_input", null);
+    return this.textReply(await this.formatList(chatId));
   }
 
-  private async confirmationReply(chatId: string, name: string, message: string): Promise<BotReply> {
-    const id = await this.storage.createPendingConfirmation(chatId, name);
+  private async beginMapLinkSelection(chatId: string, rawName: string): Promise<BotReply> {
+    const name = rawName.trim();
+    if (!name) return this.textReply("พิมพ์ชื่อร้านที่ต้องการเพิ่มลิงก์แผนที่อีกครั้ง");
+    const started = await this.storage.beginMapLinkSelection(chatId, name);
+    if (!started) return this.textReply(`ไม่เจอ "${name}" ในลิสต์ของแชตนี้`);
     return {
-      text: message,
+      text: `ส่งตำแหน่งเพื่อค้นหาสถานที่ของ ${name} ใกล้คุณ`,
       quickReply: {
         items: [
-          { type: "action", action: { type: "postback", label: "ยืนยันเพิ่ม", data: `confirm:${id}` } },
-          { type: "action", action: { type: "postback", label: "ยกเลิก", data: `cancel:${id}` } }
+          { type: "action", action: { type: "location", label: "ส่งตำแหน่ง" } }
         ]
       }
     };
@@ -158,7 +134,8 @@ export class BotService {
         items: [
           { type: "action", action: { type: "postback", label: "ดูรายการ", data: "menu:list" } },
           { type: "action", action: { type: "postback", label: "เพิ่มรายการ", data: "menu:add" } },
-          { type: "action", action: { type: "postback", label: "ลดรายการ", data: "menu:remove" } }
+          { type: "action", action: { type: "postback", label: "ลดรายการ", data: "menu:remove" } },
+          { type: "action", action: { type: "postback", label: "เพิ่มลิงก์แผนที่", data: "menu:map-link" } }
         ]
       }
     };
@@ -176,7 +153,72 @@ export class BotService {
     const items = await this.storage.listItems(chatId);
     if (items.length === 0) return "ยังไม่มีรายการที่อยากกิน";
 
-    return ["รายการที่อยากกิน:", ...items.map((item: RestaurantItem, index) => `${index + 1}. ${item.name}`)].join("\n");
+    return ["รายการที่อยากกิน:", ...items.map(formatListItem)].join("\n");
   }
 
+  private async listReply(chatId: string): Promise<BotReply> {
+    const items = await this.storage.listItems(chatId);
+    if (items.length === 0) return this.textReply("ยังไม่มีรายการที่อยากกิน");
+    if (!items.some((item) => item.googlePlaceId)) return this.textReply(await this.formatList(chatId));
+
+    return {
+      text: "รายการที่อยากกิน",
+      flex: {
+        altText: "รายการที่อยากกิน",
+        contents: {
+          type: "bubble",
+          size: "mega",
+          body: {
+            type: "box",
+            layout: "vertical",
+            spacing: "md",
+            contents: [
+              { type: "text", text: "รายการที่อยากกิน", weight: "bold", size: "lg" },
+              { type: "separator" },
+              ...items.map(formatFlexListItem)
+            ]
+          }
+        }
+      }
+    };
+  }
+
+}
+
+function quickReplyLabel(name: string, address: string | null): string {
+  const label = address ? `${name}: ${address}` : name;
+  return label.length <= 20 ? label : `${label.slice(0, 17)}...`;
+}
+
+function googleMapsUrl(name: string, placeId: string | null): string {
+  const query = encodeURIComponent(name);
+  return placeId
+    ? `https://www.google.com/maps/search/?api=1&query=${query}&query_place_id=${encodeURIComponent(placeId)}`
+    : `https://www.google.com/maps/search/?api=1&query=${query}`;
+}
+
+function formatListItem(item: RestaurantItem, index: number): string {
+  if (!item.googlePlaceId) return `${index + 1}. ${item.name}`;
+
+  const name = item.matchedName ?? item.name;
+  return `${index + 1}. ${item.name}\n   ${googleMapsUrl(name, item.googlePlaceId)}`;
+}
+
+function formatFlexListItem(item: RestaurantItem, index: number): Record<string, unknown> {
+  const contents: Record<string, unknown>[] = [
+    { type: "text", text: `${index + 1}. ${item.name}`, size: "sm", wrap: true, flex: 1 }
+  ];
+
+  if (item.googlePlaceId) {
+    const name = item.matchedName ?? item.name;
+    contents.push({
+      type: "button",
+      style: "link",
+      height: "sm",
+      flex: 0,
+      action: { type: "uri", label: "GGMap", uri: googleMapsUrl(name, item.googlePlaceId) }
+    });
+  }
+
+  return { type: "box", layout: "horizontal", alignItems: "center", contents };
 }

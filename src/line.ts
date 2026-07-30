@@ -32,18 +32,25 @@ export async function replyLineText(channelAccessToken: string, replyToken: stri
       "Content-Type": "application/json",
       Authorization: `Bearer ${channelAccessToken}`
     },
-    body: JSON.stringify({
-      replyToken,
-      messages: [
-        reply.quickReply
-          ? { type: "text", text: reply.text, quickReply: reply.quickReply }
-          : { type: "text", text: reply.text }
-      ]
-    })
+    body: JSON.stringify({ replyToken, messages: [toLineMessage(reply)] })
   });
 
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`LINE reply failed: ${response.status} ${body}`);
   }
+}
+
+function toLineMessage(reply: BotReply): Record<string, unknown> {
+  if (reply.flex) {
+    return {
+      type: "flex",
+      altText: reply.flex.altText,
+      contents: reply.flex.contents
+    };
+  }
+
+  return reply.quickReply
+    ? { type: "text", text: reply.text, quickReply: reply.quickReply }
+    : { type: "text", text: reply.text };
 }

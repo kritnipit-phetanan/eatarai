@@ -1,113 +1,148 @@
 # เมื่อไรจะไปกิน
 
-LINE group bot that keeps a restaurant wish list, validates restaurant names with Google Places Text Search (New), and caches validation results in Postgres to control cost.
+LINE bot สำหรับเก็บลิสต์ร้านที่อยากไปกิน แยกรายการตาม LINE group, multi-person room และแชตส่วนตัว
 
-## Data model
+## พฤติกรรมปัจจุบัน
 
-The bot stores data per LINE chat. LINE group events become `chat_id = group:<groupId>`, rooms become `room:<roomId>`, and direct chats become `user:<userId>`.
+- ทุกคำสั่งต้อง mention บอทจริงใน LINE เพื่อป้องกันข้อความทั่วไปถูกตีความเป็นคำสั่ง
+- mention บอทเปล่า ๆ จะมี Quick Reply: ดูรายการ, เพิ่มรายการ, ลดรายการ, เพิ่มลิงก์แผนที่
+- เพิ่มร้านทันทีโดยไม่เรียก Google Places
+- เพิ่มลิงก์แผนที่เป็น flow แยก: ผู้ใช้ส่งตำแหน่ง แล้วบอทจึงค้น Google Places และให้เลือกสถานที่
+- เมื่อเลือกสถานที่ บอทบันทึก `place_id`, ชื่อ และที่อยู่ไว้กับรายการ พร้อมส่ง Google Maps URL
+- คำสั่ง `รายการ` แสดงปุ่ม `GGMap` ข้างร้านที่มีลิงก์แผนที่แล้ว
+- รายการและ state เพิ่มลิงก์แผนที่แยกตาม chat ID เสมอ
 
-Postgres tables are created automatically on startup:
+## คำสั่ง
 
-- `restaurant_items`: restaurant/food wish list items per chat
-- `place_validation_cache`: Google Places validation cache
-- `google_call_log`: daily Google Places call counters
+```text
+@เมื่อไรจะไปกิน
+@เมื่อไรจะไปกิน รายการ
+@เมื่อไรจะไปกิน เพิ่ม Sushiro
+@เมื่อไรจะไปกิน อยากกิน Hotpot Man
+@เมื่อไรจะไปกิน เพิ่มลิงก์แผนที่ Sushiro
+@เมื่อไรจะไปกิน ลบ Sushiro
+@เมื่อไรจะไปกิน กิน Sushiro แล้ว
+```
 
-## Required credentials
+การพิมพ์ `รายการ`, `เพิ่ม ...` หรือชื่อร้านโดยไม่ mention บอทจะไม่ทำให้บอทตอบ
 
-### LINE Messaging API
+## Google Places และการคุมค่าใช้จ่าย
 
-Get these from LINE Developers Console:
+Google Places ไม่ถูกเรียกขณะเพิ่มร้าน การค้นหาจะเกิดขึ้นเมื่อผู้ใช้เพิ่มลิงก์แผนที่และกดส่งตำแหน่งใน LINE เท่านั้น:
+
+```text
+เพิ่มร้าน -> เพิ่มลิงก์แผนที่ -> ส่งตำแหน่ง -> จองโควต้ารายวัน -> Google Places Text Search -> เลือกสถานที่
+```
+
+- `GOOGLE_DAILY_VALIDATION_LIMIT`: เพดาน Google validations รวมทุกแชตต่อวัน
+- `GOOGLE_GROUP_DAILY_VALIDATION_LIMIT`: เพดานต่อ group, room หรือแชตส่วนตัวต่อวัน
+- การจองโควต้าเป็น atomic ใน Postgres เพื่อไม่ให้หลายแชตทำให้เกินเพดานพร้อมกัน
+- Google Text Search ขอผลสูงสุด 3 สถานที่ โดยใช้ตำแหน่งที่ผู้ใช้ส่งเป็น location bias
+- Google response ที่ใช้คือ place ID, ชื่อร้าน, ที่อยู่ และประเภทสถานที่
+- ไม่เรียก Place Details, รูปภาพ, rating หรือเวลาเปิดปิด
+
+### Google Maps links
+
+หลังผู้ใช้เลือกสถานที่ บอทจะส่ง Google Maps URL ที่ระบุสถานที่นั้น เช่น:
+
+```text
+https://www.google.com/maps/search/?api=1&query=<encoded-name>&query_place_id=<place-id>
+```
+
+Maps URLs ไม่ต้องใช้ Google API key เพิ่มเติม และ Place ID ทำให้ลิงก์ชี้ไปยังสถานที่ที่ถูกต้องได้มากกว่าการใช้ชื่อร้านอย่างเดียว. LINE จะขอสิทธิ์ location เฉพาะเมื่อผู้ใช้กด `ส่งตำแหน่ง`; บอทไม่สามารถเปิดตำแหน่งเองได้. ดู [Google Maps URLs](https://developers.google.com/maps/documentation/urls/get-started) และ [Text Search (New)](https://developers.google.com/maps/documentation/places/web-service/text-search).
+
+## ข้อมูลที่จัดเก็บ
+
+ข้อมูลถูกแยกตาม LINE chat:
+
+- group: `group:<groupId>`
+- multi-person room: `room:<roomId>`
+- direct chat: `user:<userId>`
+
+แอปสร้างตารางต่อไปนี้อัตโนมัติเมื่อเริ่มทำงาน:
+
+- `restaurant_items`: รายการร้านต่อ chat
+- `google_call_log`: ตัวนับโควต้าการเรียก Google รายวัน
+- `pending_map_link_selections`: รายการที่กำลังรอ location เพื่อค้นหาสถานที่
+- `pending_map_link_candidates`: สถานที่ที่รอผู้ใช้กดเลือก
+
+## Environment variables
+
+สร้าง `.env` จาก `.env.example` สำหรับ local development ห้าม commit `.env`
+
+```env
+PORT=3000
+DATABASE_URL=
+POSTGRES_SSL=true
+
+LINE_CHANNEL_SECRET=
+LINE_CHANNEL_ACCESS_TOKEN=
+BOT_DISPLAY_NAME=เมื่อไรจะไปกิน
+
+GOOGLE_MAPS_API_KEY=
+GOOGLE_REGION_CODE=TH
+GOOGLE_LANGUAGE_CODE=th
+GOOGLE_DAILY_VALIDATION_LIMIT=100
+GOOGLE_GROUP_DAILY_VALIDATION_LIMIT=30
+```
+
+## LINE Messaging API
+
+รับค่าต่อไปนี้จาก LINE Developers Console:
 
 - `LINE_CHANNEL_SECRET`: Messaging API channel > Basic settings > Channel secret
 - `LINE_CHANNEL_ACCESS_TOKEN`: Messaging API channel > Messaging API > Channel access token
 
-Also enable:
+เปิดค่าเหล่านี้ด้วย:
 
 - Use webhook
 - Allow bot to join group chats
-- Webhook URL: `https://YOUR_RENDER_DOMAIN/line/webhook`
+- Auto-reply messages: Disabled
 
-### Google Places API
-
-Get `GOOGLE_MAPS_API_KEY` from Google Cloud Console:
-
-1. Create/select a Google Cloud project.
-2. Enable **Places API**.
-3. Create an API key under **APIs & Services > Credentials**.
-4. Restrict the key to Places API.
-5. Set quota and budget alerts.
-
-`GOOGLE_LOCATION_BIAS` is optional. Leave it blank for Thailand-wide search. If needed, set it to the JSON body accepted by Google Places Text Search, for example:
-
-```json
-{"circle":{"center":{"latitude":13.7563,"longitude":100.5018},"radius":50000}}
-```
-
-## Supabase / Postgres
-
-Create a Supabase project, then copy the Postgres connection string into:
-
-```env
-DATABASE_URL=postgresql://postgres.PROJECT_ID:PASSWORD@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres
-POSTGRES_SSL=true
-```
-
-Use Supabase's pooled connection string for Render. The app auto-creates tables on startup.
-
-## Local setup
-
-```bash
-npm install
-cp .env.example .env
-npm run build
-npm test
-npm start
-```
-
-## Render deploy
-
-Create a Render Web Service:
-
-- Build command: `npm install && npm run build`
-- Start command: `npm start`
-- Environment: Node
-
-Set env vars in Render:
-
-```env
-DATABASE_URL=
-POSTGRES_SSL=true
-LINE_CHANNEL_SECRET=
-LINE_CHANNEL_ACCESS_TOKEN=
-BOT_DISPLAY_NAME=เมื่อไรจะไปกิน
-GOOGLE_MAPS_API_KEY=
-GOOGLE_REGION_CODE=TH
-GOOGLE_LANGUAGE_CODE=th
-GOOGLE_LOCATION_BIAS=
-GOOGLE_DAILY_VALIDATION_LIMIT=500
-GOOGLE_GROUP_DAILY_VALIDATION_LIMIT=30
-```
-
-After deploy, test:
-
-```text
-https://YOUR_RENDER_DOMAIN/health
-```
-
-Then set LINE webhook URL:
+ตั้ง webhook หลัง deploy:
 
 ```text
 https://YOUR_RENDER_DOMAIN/line/webhook
 ```
 
-## Commands
+## Google Places API
 
-- `เพิ่ม Sukishi`
-- `อยากกิน Hotpot Man`
-- `@เมื่อไรจะไปกิน Sukishi`
-- `รายการ`
-- `กิน Sukishi แล้ว`
-- `ลบ Sukishi`
-- `ยืนยัน Some Custom Place`
+1. สร้างหรือเลือก Google Cloud project
+2. เปิด Places API
+3. สร้าง API key ที่ APIs & Services > Credentials
+4. จำกัด key ให้ใช้กับ Places API
+5. ตั้ง budget alert และ quota ใน Google Cloud
 
-Standalone text without a bot mention is ignored to avoid unnecessary Google Places calls.
+## Supabase
+
+1. สร้าง Supabase project
+2. กด Connect บน project dashboard
+3. ใช้ Session pooler connection string (port `5432`) สำหรับ Render
+4. ตั้งค่า `DATABASE_URL` และ `POSTGRES_SSL=true` ใน Render
+
+ไม่ต้องสร้างตารางเอง แอปจะ migration schema เมื่อเริ่มทำงาน
+
+## Local development
+
+```bash
+npm install
+cp .env.example .env
+npm test
+npm run dev
+```
+
+ตรวจ health endpoint:
+
+```text
+http://localhost:3000/health
+```
+
+## Render deployment
+
+สร้าง Render Web Service จาก GitHub repository:
+
+- Build command: `npm install && npm run build`
+- Start command: `npm start`
+- Health check path: `/health`
+
+ตั้ง environment variables ชุดเดียวกับ `.env.example` ใน Render แล้วนำ Render URL ไปตั้งเป็น LINE webhook

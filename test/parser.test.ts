@@ -42,4 +42,12 @@ describe("parseCommand", () => {
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน ลบ Hotpot Man", BOT, true), { kind: "remove", item: "Hotpot Man" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน ยืนยัน Central World", BOT, true), { kind: "ignore" });
   });
+
+  it("parses map link commands only when the bot is mentioned", () => {
+    assert.deepEqual(parseCommand("เพิ่มลิงก์แผนที่ Sushiro", BOT, false), { kind: "ignore" });
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน เพิ่มลิงก์แผนที่ Sushiro", BOT, true), {
+      kind: "map_link",
+      item: "Sushiro"
+    });
+  });
 });

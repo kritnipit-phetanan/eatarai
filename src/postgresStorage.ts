@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { normalizeText } from "./normalize.js";
-import { CACHE_TTL_SECONDS, type Storage } from "./storage.js";
-import type { PlaceValidation, RestaurantItem, ValidationStatus } from "./types.js";
+import type { Storage } from "./storage.js";
+import type { PlaceValidation, RestaurantItem } from "./types.js";
 
 const { Pool } = pg;
 
@@ -72,26 +72,6 @@ export class PostgresStorage implements Storage {
     return { item, created: false };
   }
 
-  async createPendingConfirmation(chatId: string, name: string): Promise<string> {
-    const id = randomUUID();
-    await this.pool.query(
-      `INSERT INTO pending_confirmations (id, chat_id, name, expires_at, created_at)
-       VALUES ($1, $2, $3, now() + interval '15 minutes', now())`,
-      [id, chatId, name.trim()]
-    );
-    return id;
-  }
-
-  async takePendingConfirmation(chatId: string, id: string): Promise<string | null> {
-    const result = await this.pool.query<{ name: string }>(
-      `DELETE FROM pending_confirmations
-       WHERE id = $1 AND chat_id = $2 AND expires_at > now()
-       RETURNING name`,
-      [id, chatId]
-    );
-    return result.rows[0]?.name ?? null;
-  }
-
   async removeItem(chatId: string, name: string): Promise<boolean> {
     const result = await this.pool.query("DELETE FROM restaurant_items WHERE chat_id = $1 AND normalized_name = $2", [
       chatId,
@@ -106,52 +86,6 @@ export class PostgresStorage implements Storage {
       [chatId]
     );
     return result.rows.map(rowToItem);
-  }
-
-  async getValidCache(
-    normalizedQuery: string,
-    regionCode: string,
-    languageCode: string
-  ): Promise<PlaceValidation | null> {
-    const result = await this.pool.query<CacheRow>(
-      `SELECT * FROM place_validation_cache
-       WHERE normalized_query = $1 AND region_code = $2 AND language_code = $3 AND expires_at > now()`,
-      [normalizedQuery, regionCode, languageCode]
-    );
-    const row = result.rows[0];
-    return row ? rowToValidation(row, "cache") : null;
-  }
-
-  async saveCache(validation: PlaceValidation): Promise<void> {
-    const ttl = CACHE_TTL_SECONDS[validation.status];
-    await this.pool.query(
-      `INSERT INTO place_validation_cache (
-        normalized_query, region_code, language_code, status, place_id,
-        display_name, formatted_address, primary_type, types_json,
-        expires_at, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now() + ($10 || ' seconds')::interval, now(), now())
-      ON CONFLICT(normalized_query, region_code, language_code) DO UPDATE SET
-        status = excluded.status,
-        place_id = excluded.place_id,
-        display_name = excluded.display_name,
-        formatted_address = excluded.formatted_address,
-        primary_type = excluded.primary_type,
-        types_json = excluded.types_json,
-        expires_at = excluded.expires_at,
-        updated_at = now()`,
-      [
-        validation.normalizedQuery,
-        validation.regionCode,
-        validation.languageCode,
-        validation.status,
-        validation.placeId,
-        validation.displayName,
-        validation.formattedAddress,
-        validation.primaryType,
-        JSON.stringify(validation.types),
-        ttl
-      ]
-    );
   }
 
   async tryReserveGoogleCall(chatId: string, globalLimit: number, groupLimit: number): Promise<boolean> {
@@ -191,6 +125,80 @@ export class PostgresStorage implements Storage {
     } finally {
       client.release();
     }
+  }
+
+  async beginMapLinkSelection(chatId: string, name: string): Promise<boolean> {
+    const item = await this.getItemByNormalizedName(chatId, normalizeText(name));
+    if (!item) return false;
+
+    await this.pool.query(
+      `INSERT INTO pending_map_link_selections (chat_id, item_id, expires_at, created_at)
+       VALUES ($1, $2, now() + interval '15 minutes', now())
+       ON CONFLICT(chat_id) DO UPDATE SET item_id = excluded.item_id, expires_at = excluded.expires_at, created_at = now()`,
+      [chatId, item.id]
+    );
+    return true;
+  }
+
+  async takeMapLinkSelection(chatId: string): Promise<RestaurantItem | null> {
+    const result = await this.pool.query<{ item_id: number }>(
+      `DELETE FROM pending_map_link_selections
+       WHERE chat_id = $1 AND expires_at > now()
+       RETURNING item_id`,
+      [chatId]
+    );
+    const itemId = result.rows[0]?.item_id;
+    if (!itemId) return null;
+
+    const itemResult = await this.pool.query<ItemRow>(
+      "SELECT * FROM restaurant_items WHERE id = $1 AND chat_id = $2",
+      [itemId, chatId]
+    );
+    const row = itemResult.rows[0];
+    return row ? rowToItem(row) : null;
+  }
+
+  async createPendingMapLink(chatId: string, itemId: number, place: PlaceValidation): Promise<string> {
+    if (!place.placeId) throw new Error("Map link candidate requires a Google place ID");
+    const id = randomUUID();
+    await this.pool.query(
+      `INSERT INTO pending_map_link_candidates (
+        id, chat_id, item_id, place_id, display_name, formatted_address, primary_type, types_json, expires_at, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() + interval '15 minutes', now())`,
+      [id, chatId, itemId, place.placeId, place.displayName, place.formattedAddress, place.primaryType, JSON.stringify(place.types)]
+    );
+    return id;
+  }
+
+  async takePendingMapLink(chatId: string, id: string): Promise<{ itemId: number; place: PlaceValidation } | null> {
+    const result = await this.pool.query<PendingMapLinkRow>(
+      `DELETE FROM pending_map_link_candidates
+       WHERE id = $1 AND chat_id = $2 AND expires_at > now()
+       RETURNING item_id, place_id, display_name, formatted_address, primary_type, types_json`,
+      [id, chatId]
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      itemId: Number(row.item_id),
+      place: {
+        placeId: row.place_id,
+        displayName: row.display_name,
+        formattedAddress: row.formatted_address,
+        primaryType: row.primary_type,
+        types: parseJsonArray(row.types_json)
+      }
+    };
+  }
+
+  async setItemPlace(chatId: string, itemId: number, place: PlaceValidation): Promise<boolean> {
+    const result = await this.pool.query(
+      `UPDATE restaurant_items
+       SET source = 'google_places', google_place_id = $3, matched_name = $4, matched_address = $5, matched_types_json = $6
+       WHERE id = $1 AND chat_id = $2`,
+      [itemId, chatId, place.placeId, place.displayName, place.formattedAddress, JSON.stringify(place.types)]
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
   private async getItemByNormalizedName(chatId: string, normalizedName: string): Promise<RestaurantItem | null> {
@@ -233,22 +241,6 @@ export class PostgresStorage implements Storage {
         ON restaurant_items(chat_id, google_place_id)
         WHERE google_place_id IS NOT NULL;
 
-      CREATE TABLE IF NOT EXISTS place_validation_cache (
-        normalized_query TEXT NOT NULL,
-        region_code TEXT NOT NULL,
-        language_code TEXT NOT NULL,
-        status TEXT NOT NULL,
-        place_id TEXT,
-        display_name TEXT,
-        formatted_address TEXT,
-        primary_type TEXT,
-        types_json TEXT NOT NULL DEFAULT '[]',
-        expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        PRIMARY KEY (normalized_query, region_code, language_code)
-      );
-
       CREATE TABLE IF NOT EXISTS google_call_log (
         chat_id TEXT NOT NULL,
         day DATE NOT NULL,
@@ -258,10 +250,22 @@ export class PostgresStorage implements Storage {
         PRIMARY KEY (chat_id, day)
       );
 
-      CREATE TABLE IF NOT EXISTS pending_confirmations (
+      CREATE TABLE IF NOT EXISTS pending_map_link_selections (
+        chat_id TEXT PRIMARY KEY,
+        item_id BIGINT NOT NULL REFERENCES restaurant_items(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS pending_map_link_candidates (
         id TEXT PRIMARY KEY,
         chat_id TEXT NOT NULL,
-        name TEXT NOT NULL,
+        item_id BIGINT NOT NULL REFERENCES restaurant_items(id) ON DELETE CASCADE,
+        place_id TEXT NOT NULL,
+        display_name TEXT,
+        formatted_address TEXT,
+        primary_type TEXT,
+        types_json TEXT NOT NULL DEFAULT '[]',
         expires_at TIMESTAMPTZ NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
@@ -281,21 +285,6 @@ function rowToItem(row: ItemRow): RestaurantItem {
     matchedAddress: row.matched_address,
     matchedTypes: parseJsonArray(row.matched_types_json),
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at)
-  };
-}
-
-function rowToValidation(row: CacheRow, source: "cache"): PlaceValidation {
-  return {
-    status: row.status as ValidationStatus,
-    normalizedQuery: row.normalized_query,
-    regionCode: row.region_code,
-    languageCode: row.language_code,
-    placeId: row.place_id,
-    displayName: row.display_name,
-    formattedAddress: row.formatted_address,
-    primaryType: row.primary_type,
-    types: parseJsonArray(row.types_json),
-    source
   };
 }
 
@@ -327,11 +316,8 @@ interface ItemRow {
   created_at: Date | string;
 }
 
-interface CacheRow {
-  normalized_query: string;
-  region_code: string;
-  language_code: string;
-  status: string;
+interface PendingMapLinkRow {
+  item_id: string | number;
   place_id: string | null;
   display_name: string | null;
   formatted_address: string | null;

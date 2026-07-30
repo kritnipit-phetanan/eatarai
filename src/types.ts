@@ -4,27 +4,16 @@ export type ParsedCommand =
   | { kind: "menu" }
   | { kind: "add"; item: string; source: "explicit" | "mention" }
   | { kind: "remove"; item: string }
+  | { kind: "map_link"; item: string }
   | { kind: "show" }
   | { kind: "ignore" };
 
-export type ValidationStatus =
-  | "food_place"
-  | "non_food_place"
-  | "no_result"
-  | "ambiguous"
-  | "api_error";
-
 export interface PlaceValidation {
-  status: ValidationStatus;
-  normalizedQuery: string;
-  regionCode: string;
-  languageCode: string;
   placeId: string | null;
   displayName: string | null;
   formattedAddress: string | null;
   primaryType: string | null;
   types: string[];
-  source: "cache" | "google" | "trusted_alias" | "limit";
 }
 
 export interface RestaurantItem {
@@ -32,7 +21,7 @@ export interface RestaurantItem {
   chatId: string;
   name: string;
   normalizedName: string;
-  source: "google_places" | "trusted_alias" | "manual_confirm";
+  source: "user_input" | "google_places" | "trusted_alias" | "manual_confirm";
   googlePlaceId: string | null;
   matchedName: string | null;
   matchedAddress: string | null;
@@ -42,14 +31,16 @@ export interface RestaurantItem {
 
 export interface BotReply {
   text: string;
+  flex?: {
+    altText: string;
+    contents: Record<string, unknown>;
+  };
   quickReply?: {
     items: Array<{
       type: "action";
-      action: {
-        type: "postback";
-        label: string;
-        data: string;
-      };
+      action:
+        | { type: "postback"; label: string; data: string }
+        | { type: "location"; label: string };
     }>;
   };
 }
@@ -66,6 +57,8 @@ export interface LineWebhookEvent {
   message?: {
     type?: string;
     text?: string;
+    latitude?: number;
+    longitude?: number;
     mention?: {
       mentionees?: Array<{
         isSelf?: boolean;
