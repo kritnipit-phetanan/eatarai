@@ -53,12 +53,14 @@ async function handleLineWebhook(req: IncomingMessage, res: ServerResponse): Pro
   );
 
   if (!validSignature) {
+    console.warn(JSON.stringify({ event: "line_webhook_rejected", reason: "invalid_signature" }));
     sendJson(res, 401, { error: "invalid_signature" });
     return;
   }
 
   const payload = JSON.parse(rawBody.toString("utf8")) as { events?: LineWebhookEvent[] };
   const events = payload.events ?? [];
+  console.info(JSON.stringify({ event: "line_webhook_received", eventCount: events.length }));
 
   await Promise.all(events.map(handleLineEvent));
   sendJson(res, 200, { ok: true });
@@ -66,30 +68,47 @@ async function handleLineWebhook(req: IncomingMessage, res: ServerResponse): Pro
 
 async function handleLineEvent(event: LineWebhookEvent): Promise<void> {
   const chatId = getChatId(event);
-  if (!chatId || !event.replyToken) return;
+  if (!chatId || !event.replyToken) {
+    console.info(JSON.stringify({ event: "line_event_ignored", reason: !chatId ? "missing_chat" : "missing_reply_token" }));
+    return;
+  }
 
   if (event.type === "postback" && event.postback?.data) {
     const response = await bot.handlePostback(chatId, event.postback.data);
-    if (response) await replyLineText(config.lineChannelAccessToken, event.replyToken, response);
+    console.info(JSON.stringify({ event: "line_postback_processed", hasResponse: Boolean(response) }));
+    if (response) await sendLineReply(event.replyToken, response);
     return;
   }
 
-  if (event.type !== "message") return;
+  if (event.type !== "message") {
+    console.info(JSON.stringify({ event: "line_event_ignored", reason: "unsupported_event_type", type: event.type }));
+    return;
+  }
 
   if (event.message?.type === "location" && event.message.latitude !== undefined && event.message.longitude !== undefined) {
     const response = await bot.handleLocation(chatId, event.message.latitude, event.message.longitude);
-    if (response) await replyLineText(config.lineChannelAccessToken, event.replyToken, response);
+    console.info(JSON.stringify({ event: "line_location_processed", hasResponse: Boolean(response) }));
+    if (response) await sendLineReply(event.replyToken, response);
     return;
   }
 
-  if (event.message?.type !== "text" || !event.message.text) return;
+  if (event.message?.type !== "text" || !event.message.text) {
+    console.info(JSON.stringify({ event: "line_event_ignored", reason: "unsupported_message_type", type: event.message?.type }));
+    return;
+  }
 
   const isBotMentioned = event.message.mention?.mentionees?.some((mentionee) => mentionee.isSelf === true) ?? false;
   const command = parseCommand(event.message.text, config.botDisplayName, isBotMentioned);
   const response = await bot.handleCommand(chatId, command);
+  console.info(JSON.stringify({ event: "line_command_processed", isBotMentioned, command: command.kind, hasResponse: Boolean(response) }));
   if (!response) return;
 
-  await replyLineText(config.lineChannelAccessToken, event.replyToken, response);
+  await sendLineReply(event.replyToken, response);
+}
+
+async function sendLineReply(replyToken: string, response: NonNullable<Awaited<ReturnType<BotService["handleCommand"]>>>): Promise<void> {
+  await replyLineText(config.lineChannelAccessToken, replyToken, response);
+  console.info(JSON.stringify({ event: "line_reply_sent", type: response.flex ? "flex" : "text" }));
 }
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
