@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { normalizeText } from "./normalize.js";
 import type { Storage } from "./storage.js";
-import type { PlaceValidation, RestaurantItem } from "./types.js";
+import type { PendingInputMode, PlaceValidation, RestaurantItem } from "./types.js";
 
 const { Pool } = pg;
 
@@ -127,6 +127,25 @@ export class PostgresStorage implements Storage {
     }
   }
 
+  async beginPendingInput(chatId: string, mode: PendingInputMode): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO pending_command_inputs (chat_id, mode, expires_at, created_at)
+       VALUES ($1, $2, now() + interval '10 minutes', now())
+       ON CONFLICT(chat_id) DO UPDATE SET mode = excluded.mode, expires_at = excluded.expires_at, created_at = now()`,
+      [chatId, mode]
+    );
+  }
+
+  async takePendingInput(chatId: string): Promise<PendingInputMode | null> {
+    const result = await this.pool.query<{ mode: PendingInputMode }>(
+      `DELETE FROM pending_command_inputs
+       WHERE chat_id = $1 AND expires_at > now()
+       RETURNING mode`,
+      [chatId]
+    );
+    return result.rows[0]?.mode ?? null;
+  }
+
   async beginMapLinkSelection(chatId: string, name: string): Promise<boolean> {
     const item = await this.getItemByNormalizedName(chatId, normalizeText(name));
     if (!item) return false;
@@ -248,6 +267,13 @@ export class PostgresStorage implements Storage {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (chat_id, day)
+      );
+
+      CREATE TABLE IF NOT EXISTS pending_command_inputs (
+        chat_id TEXT PRIMARY KEY,
+        mode TEXT NOT NULL CHECK (mode IN ('add', 'remove', 'map_link')),
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
 
       CREATE TABLE IF NOT EXISTS pending_map_link_selections (

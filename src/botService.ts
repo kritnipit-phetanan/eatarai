@@ -1,7 +1,7 @@
 import type { AppConfig } from "./config.js";
 import type { GooglePlacesClient, GooglePlacesConfig } from "./googlePlaces.js";
 import type { Storage } from "./storage.js";
-import type { BotReply, ParsedCommand, RestaurantItem } from "./types.js";
+import type { BotReply, ParsedCommand, PendingInputMode, RestaurantItem } from "./types.js";
 
 export class BotService {
   private placesConfig: GooglePlacesConfig;
@@ -37,9 +37,9 @@ export class BotService {
 
   async handlePostback(chatId: string, data: string): Promise<BotReply | null> {
     if (data === "menu:list") return this.listReply(chatId);
-    if (data === "menu:add") return this.textReply("พิมพ์: @เมื่อไรจะไปกิน เพิ่ม <ชื่อร้าน>");
-    if (data === "menu:remove") return this.textReply("พิมพ์: @เมื่อไรจะไปกิน ลบ <ชื่อร้าน>");
-    if (data === "menu:map-link") return this.textReply("พิมพ์: @เมื่อไรจะไปกิน เพิ่มลิงก์แผนที่ <ชื่อร้าน>");
+    if (data === "menu:add") return this.beginInput(chatId, "add");
+    if (data === "menu:remove") return this.beginInput(chatId, "remove");
+    if (data === "menu:map-link") return this.beginInput(chatId, "map_link");
 
     const match = /^map-link:([0-9a-f-]{36})$/i.exec(data);
     if (!match) return null;
@@ -56,6 +56,20 @@ export class BotService {
     const name = pending.place.displayName ?? "สถานที่ที่เลือก";
     const mapsUrl = googleMapsUrl(name, pending.place.placeId);
     return this.textReply([`เพิ่มลิงก์แผนที่ของ ${name} แล้ว`, pending.place.formattedAddress, mapsUrl].filter(Boolean).join("\n"));
+  }
+
+  async handlePendingInput(chatId: string, text: string): Promise<BotReply | null> {
+    const mode = await this.storage.takePendingInput(chatId);
+    if (!mode) return null;
+
+    switch (mode) {
+      case "add":
+        return this.addItem(chatId, text);
+      case "remove":
+        return this.textReply(await this.removeItem(chatId, text));
+      case "map_link":
+        return this.beginMapLinkSelection(chatId, text);
+    }
   }
 
   async handleLocation(chatId: string, latitude: number, longitude: number): Promise<BotReply | null> {
@@ -81,19 +95,7 @@ export class BotService {
           id: await this.storage.createPendingMapLink(chatId, item.id, place)
         }))
       );
-      return {
-        text: `เลือกสถานที่สำหรับลิงก์แผนที่ของ ${item.name}`,
-        quickReply: {
-          items: choices.map(({ place, id }) => ({
-            type: "action" as const,
-            action: {
-              type: "postback" as const,
-              label: quickReplyLabel(place.displayName ?? item.name, place.formattedAddress),
-              data: `map-link:${id}`
-            }
-          }))
-        }
-      };
+      return this.mapLinkCandidatesReply(item.name, choices);
     } catch (error) {
       console.error(JSON.stringify({ event: "google_places_map_link_search_failed", query: item.name, error: String(error) }));
       return this.textReply("ค้นหาสถานที่ไม่สำเร็จ ลองใหม่ภายหลัง");
@@ -127,16 +129,74 @@ export class BotService {
     return { text };
   }
 
+  private async beginInput(chatId: string, mode: PendingInputMode): Promise<BotReply | null> {
+    await this.storage.beginPendingInput(chatId, mode);
+    return null;
+  }
+
   private menuReply(): BotReply {
     return {
-      text: "เลือกสิ่งที่ต้องการ",
-      quickReply: {
-        items: [
-          { type: "action", action: { type: "postback", label: "ดูรายการ", data: "menu:list" } },
-          { type: "action", action: { type: "postback", label: "เพิ่มรายการ", data: "menu:add" } },
-          { type: "action", action: { type: "postback", label: "ลดรายการ", data: "menu:remove" } },
-          { type: "action", action: { type: "postback", label: "เพิ่มลิงก์แผนที่", data: "menu:map-link" } }
-        ]
+      text: "เมนูเมื่อไรจะไปกิน",
+      flex: {
+        altText: "เมนูเมื่อไรจะไปกิน",
+        contents: {
+          type: "bubble",
+          body: {
+            type: "box",
+            layout: "vertical",
+            spacing: "md",
+            contents: [
+              { type: "text", text: "เมื่อไรจะไปกิน", weight: "bold", size: "lg" },
+              { type: "button", style: "primary", action: { type: "postback", label: "ดูรายการ", data: "menu:list" } },
+              {
+                type: "button",
+                style: "secondary",
+                action: { type: "postback", label: "เพิ่มรายการ", data: "menu:add", inputOption: "openKeyboard" }
+              },
+              {
+                type: "button",
+                style: "secondary",
+                action: { type: "postback", label: "ลดรายการ", data: "menu:remove", inputOption: "openKeyboard" }
+              },
+              {
+                type: "button",
+                style: "secondary",
+                action: { type: "postback", label: "เพิ่มแผนที่", data: "menu:map-link", inputOption: "openKeyboard" }
+              }
+            ]
+          }
+        }
+      }
+    };
+  }
+
+  private mapLinkCandidatesReply(
+    itemName: string,
+    choices: Array<{ place: { displayName: string | null; formattedAddress: string | null }; id: string }>
+  ): BotReply {
+    return {
+      text: `เลือกสถานที่สำหรับ ${itemName}`,
+      flex: {
+        altText: `เลือกสถานที่สำหรับ ${itemName}`,
+        contents: {
+          type: "bubble",
+          body: {
+            type: "box",
+            layout: "vertical",
+            spacing: "md",
+            contents: [
+              { type: "text", text: `เลือกสถานที่สำหรับ ${itemName}`, weight: "bold", size: "lg", wrap: true },
+              ...choices.flatMap(({ place, id }) => [
+                { type: "text", text: place.formattedAddress ?? "ไม่พบที่อยู่", size: "xs", color: "#666666", wrap: true },
+                {
+                  type: "button",
+                  style: "secondary",
+                  action: { type: "postback", label: quickReplyLabel(place.displayName ?? itemName, place.formattedAddress), data: `map-link:${id}` }
+                }
+              ])
+            ]
+          }
+        }
       }
     };
   }
@@ -216,7 +276,7 @@ function formatFlexListItem(item: RestaurantItem, index: number): Record<string,
       style: "link",
       height: "sm",
       flex: 0,
-      action: { type: "uri", label: "GGMap", uri: googleMapsUrl(name, item.googlePlaceId) }
+      action: { type: "uri", label: "Map", uri: googleMapsUrl(name, item.googlePlaceId) }
     });
   }
 

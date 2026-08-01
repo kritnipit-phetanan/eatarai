@@ -54,11 +54,10 @@ describe("BotService", () => {
 
     const choices = await service.handleLocation("group:1", 13.7563, 100.5018);
     assert.equal(client.calls, 1);
-    assert.equal(choices?.quickReply?.items.length, 2);
-    const firstAction = choices?.quickReply?.items[0]?.action;
-    assert.equal(firstAction?.type, "postback");
-    assert.ok(firstAction && firstAction.type === "postback");
-    const mapLinkData = firstAction.data;
+    assert.equal(choices?.flex?.altText, "เลือกสถานที่สำหรับ Sushiro");
+    const candidates = JSON.stringify(choices?.flex?.contents);
+    assert.match(candidates, /map-link:00000000-0000-4000-8000-000000000001/);
+    const mapLinkData = "map-link:00000000-0000-4000-8000-000000000001";
 
     const foreignRoom = await service.handlePostback("room:2", mapLinkData);
     assert.match(foreignRoom?.text ?? "", /หมดอายุ/);
@@ -72,7 +71,7 @@ describe("BotService", () => {
     const list = await service.handleCommand("group:1", { kind: "show" });
     assert.equal(list?.flex?.altText, "รายการที่อยากกิน");
     const flexContents = JSON.stringify(list?.flex?.contents);
-    assert.match(flexContents, /"label":"GGMap"/);
+    assert.match(flexContents, /"label":"Map"/);
     assert.match(flexContents, /query_place_id=places%2Fsushiro-siam/);
   });
 
@@ -112,6 +111,29 @@ describe("BotService", () => {
 
     assert.match(response?.text ?? "", /โควต้าค้นหาสถานที่วันนี้เต็มแล้ว/);
     assert.equal(client.calls, 0);
+  });
+
+  it("uses a per-chat pending menu input for add, remove, and map actions", async () => {
+    const client = new MockPlacesClient();
+    const service = createService(client);
+
+    const menu = await service.handleCommand("group:1", { kind: "menu" });
+    assert.equal(menu?.flex?.altText, "เมนูเมื่อไรจะไปกิน");
+    assert.match(JSON.stringify(menu?.flex?.contents), /"inputOption":"openKeyboard"/);
+
+    const addPrompt = await service.handlePostback("group:1", "menu:add");
+    assert.equal(addPrompt, null);
+    const added = await service.handlePendingInput("group:1", "Sushiro");
+    assert.match(added?.text ?? "", /Sushiro/);
+    assert.equal(await service.handlePendingInput("room:2", "Sushiro"), null);
+
+    await service.handlePostback("group:1", "menu:remove");
+    const removed = await service.handlePendingInput("group:1", "Sushiro");
+    assert.doesNotMatch(removed?.text ?? "", /1\. Sushiro/);
+
+    await service.handlePostback("group:1", "menu:map-link");
+    const missing = await service.handlePendingInput("group:1", "Sushiro");
+    assert.match(missing?.text ?? "", /ไม่เจอ/);
   });
 });
 

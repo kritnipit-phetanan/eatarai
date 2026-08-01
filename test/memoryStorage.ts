@@ -1,10 +1,11 @@
 import { normalizeText } from "../src/normalize.js";
 import type { Storage } from "../src/storage.js";
-import type { PlaceValidation, RestaurantItem } from "../src/types.js";
+import type { PendingInputMode, PlaceValidation, RestaurantItem } from "../src/types.js";
 
 export class MemoryStorage implements Storage {
   private items: RestaurantItem[] = [];
   private calls = new Map<string, number>();
+  private pendingInputs = new Map<string, { mode: PendingInputMode; expiresAt: number }>();
   private pendingSelection = new Map<string, { itemId: number; expiresAt: number }>();
   private pendingMapLinks = new Map<string, { chatId: string; itemId: number; place: PlaceValidation; expiresAt: number }>();
   private nextId = 1;
@@ -62,6 +63,17 @@ export class MemoryStorage implements Storage {
     if (globalCalls >= globalLimit || groupCalls >= groupLimit) return false;
     this.calls.set(chatId, groupCalls + 1);
     return true;
+  }
+
+  async beginPendingInput(chatId: string, mode: PendingInputMode): Promise<void> {
+    this.pendingInputs.set(chatId, { mode, expiresAt: Date.now() + 10 * 60 * 1000 });
+  }
+
+  async takePendingInput(chatId: string): Promise<PendingInputMode | null> {
+    const pending = this.pendingInputs.get(chatId);
+    this.pendingInputs.delete(chatId);
+    if (!pending || pending.expiresAt <= Date.now()) return null;
+    return pending.mode;
   }
 
   async beginMapLinkSelection(chatId: string, name: string): Promise<boolean> {

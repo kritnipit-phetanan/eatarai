@@ -1,4 +1,4 @@
-import type { PlaceValidation, RestaurantItem } from "./types.js";
+import type { PendingInputMode, PlaceValidation, RestaurantItem } from "./types.js";
 
 export interface Storage {
   init(): Promise<void>;
@@ -12,6 +12,8 @@ export interface Storage {
   removeItem(chatId: string, name: string): Promise<boolean>;
   listItems(chatId: string): Promise<RestaurantItem[]>;
   tryReserveGoogleCall(chatId: string, globalLimit: number, groupLimit: number): Promise<boolean>;
+  beginPendingInput(chatId: string, mode: PendingInputMode): Promise<void>;
+  takePendingInput(chatId: string): Promise<PendingInputMode | null>;
   beginMapLinkSelection(chatId: string, name: string): Promise<boolean>;
   takeMapLinkSelection(chatId: string): Promise<RestaurantItem | null>;
   createPendingMapLink(chatId: string, itemId: number, place: PlaceValidation): Promise<string>;

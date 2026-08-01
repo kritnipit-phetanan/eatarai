@@ -103,7 +103,9 @@ async function handleLineEvent(event: LineWebhookEvent): Promise<void> {
   const hasTextMention = hasBotMentionPrefix(event.message.text, config.botDisplayName);
   const isBotMentioned = hasStructuredMention || hasTextMention;
   const command = parseCommand(event.message.text, config.botDisplayName, isBotMentioned);
-  const response = await bot.handleCommand(chatId, command);
+  const response = command.kind === "ignore" && !isBotMentioned
+    ? await bot.handlePendingInput(chatId, event.message.text)
+    : await bot.handleCommand(chatId, command);
   console.info(JSON.stringify({
     event: "line_command_processed",
     hasStructuredMention,

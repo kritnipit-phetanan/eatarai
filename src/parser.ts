@@ -16,7 +16,7 @@ export function parseCommand(rawText: string, botDisplayName: string, isBotMenti
   const remove = matchRemove(text);
   if (remove) return { kind: "remove", item: remove };
 
-  const mapLink = matchPrefix(text, ["เพิ่มลิงก์แผนที่"]);
+  const mapLink = matchPrefix(text, ["เพิ่มแผนที่"]);
   if (mapLink) return { kind: "map_link", item: mapLink };
 
   const explicitAdd = matchPrefix(text, ["เพิ่ม", "อยากกิน", "+"]);
@@ -44,9 +44,14 @@ function matchRemove(text: string): string | null {
   const deletePrefix = matchPrefix(text, ["ลบ"]);
   if (deletePrefix) return deletePrefix;
 
-  if (text.startsWith("กิน ") && text.endsWith(" แล้ว")) {
-    const item = text.slice("กิน ".length, -" แล้ว".length).trim();
-    return item || null;
+  if (text.startsWith("กิน ")) {
+    const candidate = text.slice("กิน ".length).trim();
+    for (const suffix of [" มาแล้ว", " แล้ว"]) {
+      if (candidate.endsWith(suffix)) {
+        const item = candidate.slice(0, -suffix.length).trim();
+        return item || null;
+      }
+    }
   }
 
   return null;

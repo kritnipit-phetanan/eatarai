@@ -1,5 +1,7 @@
 export type ChatType = "group" | "room" | "user";
 
+export type PendingInputMode = "add" | "remove" | "map_link";
+
 export type ParsedCommand =
   | { kind: "menu" }
   | { kind: "add"; item: string; source: "explicit" | "mention" }

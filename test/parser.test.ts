@@ -48,13 +48,14 @@ describe("parseCommand", () => {
   it("parses show and remove commands", () => {
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน รายการ", BOT, true), { kind: "show" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน กิน Sukishi แล้ว", BOT, true), { kind: "remove", item: "Sukishi" });
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน กิน Sukishi มาแล้ว", BOT, true), { kind: "remove", item: "Sukishi" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน ลบ Hotpot Man", BOT, true), { kind: "remove", item: "Hotpot Man" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน ยืนยัน Central World", BOT, true), { kind: "ignore" });
   });
 
-  it("parses map link commands only when the bot is mentioned", () => {
-    assert.deepEqual(parseCommand("เพิ่มลิงก์แผนที่ Sushiro", BOT, false), { kind: "ignore" });
-    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน เพิ่มลิงก์แผนที่ Sushiro", BOT, true), {
+  it("parses map commands only when the bot is mentioned", () => {
+    assert.deepEqual(parseCommand("เพิ่มแผนที่ Sushiro", BOT, false), { kind: "ignore" });
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน เพิ่มแผนที่ Sushiro", BOT, true), {
       kind: "map_link",
       item: "Sushiro"
     });
