@@ -1,10 +1,19 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { hasBotMentionPrefix } from "../src/normalize.js";
 import { parseCommand } from "../src/parser.js";
 
 const BOT = "เมื่อไรจะไปกิน";
 
 describe("parseCommand", () => {
+  it("recognizes only an exact @bot-name text prefix for the fallback", () => {
+    assert.equal(hasBotMentionPrefix("@เมื่อไรจะไปกิน เพิ่ม Sukishi", BOT), true);
+    assert.equal(hasBotMentionPrefix("@เมื่อไรจะไปกิน", BOT), true);
+    assert.equal(hasBotMentionPrefix("เมื่อไรจะไปกิน เพิ่ม Sukishi", BOT), false);
+    assert.equal(hasBotMentionPrefix("@เมื่อไรจะไปกินนะ เพิ่ม Sukishi", BOT), false);
+    assert.equal(hasBotMentionPrefix("มาคุยกับ @เมื่อไรจะไปกิน เพิ่ม Sukishi", BOT), false);
+  });
+
   it("requires a real bot mention for all commands", () => {
     assert.deepEqual(parseCommand("เพิ่ม Sukishi", BOT, false), { kind: "ignore" });
     assert.deepEqual(parseCommand("รายการ", BOT, false), { kind: "ignore" });

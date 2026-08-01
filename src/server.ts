@@ -5,6 +5,7 @@ import { BotService } from "./botService.js";
 import { loadConfig } from "./config.js";
 import { FetchGooglePlacesClient } from "./googlePlaces.js";
 import { getChatId, replyLineText, verifyLineSignature } from "./line.js";
+import { hasBotMentionPrefix } from "./normalize.js";
 import { parseCommand } from "./parser.js";
 import { PostgresStorage } from "./postgresStorage.js";
 import type { LineWebhookEvent } from "./types.js";
@@ -97,10 +98,19 @@ async function handleLineEvent(event: LineWebhookEvent): Promise<void> {
     return;
   }
 
-  const isBotMentioned = event.message.mention?.mentionees?.some((mentionee) => mentionee.isSelf === true) ?? false;
+  const hasStructuredMention = event.message.mention?.mentionees?.some((mentionee) => mentionee.isSelf === true) ?? false;
+  // LINE may omit mention metadata in small group chats. Accept only an exact @<bot name> text prefix as a fallback.
+  const hasTextMention = hasBotMentionPrefix(event.message.text, config.botDisplayName);
+  const isBotMentioned = hasStructuredMention || hasTextMention;
   const command = parseCommand(event.message.text, config.botDisplayName, isBotMentioned);
   const response = await bot.handleCommand(chatId, command);
-  console.info(JSON.stringify({ event: "line_command_processed", isBotMentioned, command: command.kind, hasResponse: Boolean(response) }));
+  console.info(JSON.stringify({
+    event: "line_command_processed",
+    hasStructuredMention,
+    hasTextMention,
+    command: command.kind,
+    hasResponse: Boolean(response)
+  }));
   if (!response) return;
 
   await sendLineReply(event.replyToken, response);

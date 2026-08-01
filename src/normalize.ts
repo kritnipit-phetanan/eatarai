@@ -18,3 +18,9 @@ export function stripBotMention(text: string, botDisplayName: string): { mention
 
   return { mentioned: false, text: trimmed };
 }
+
+export function hasBotMentionPrefix(text: string, botDisplayName: string): boolean {
+  const name = `@${botDisplayName}`;
+  const trimmed = text.trim();
+  return trimmed === name || trimmed.startsWith(`${name} `);
+}
