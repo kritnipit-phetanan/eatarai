@@ -59,5 +59,11 @@ describe("parseCommand", () => {
       kind: "map_link",
       item: "Sushiro"
     });
+    for (const command of ["เพิ่มลิงก์แผนที่", "เพิ่มลิงก์", "ใส่ลิงก์"]) {
+      assert.deepEqual(parseCommand(`@เมื่อไรจะไปกิน ${command} Sushiro`, BOT, true), {
+        kind: "map_link",
+        item: "Sushiro"
+      });
+    }
   });
 });

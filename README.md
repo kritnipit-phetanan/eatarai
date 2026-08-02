@@ -1,151 +1,112 @@
 # เมื่อไรจะไปกิน
 
-LINE bot สำหรับเก็บลิสต์ร้านที่อยากไปกิน แยกรายการตาม LINE group, multi-person room และแชตส่วนตัว
+LINE bot สำหรับรายการร้านที่อยากกิน โดยแยกข้อมูลตาม LINE group, multi-person room และแชตส่วนตัว
 
-## พฤติกรรมปัจจุบัน
+## Architecture
 
-- ทุกคำสั่งต้อง mention บอทจริงใน LINE หรือเริ่มต้นด้วย `@เมื่อไรจะไปกิน` เพื่อป้องกันข้อความทั่วไปถูกตีความเป็นคำสั่ง
-- mention บอทเปล่า ๆ จะแสดง Flex menu: ดูรายการ, เพิ่มรายการ, ลดรายการ, เพิ่มแผนที่
-- เมื่อกด เพิ่มรายการ, ลดรายการ หรือ เพิ่มแผนที่ บอทจะเปิด keyboard (LINE iOS/Android 12.6+) และรอชื่อร้านจากข้อความถัดไปใน chat เดิมเป็นเวลา 10 นาที
-- เพิ่มร้านทันทีโดยไม่เรียก Google Places
-- เพิ่มแผนที่เป็น flow แยก: ผู้ใช้ส่งตำแหน่ง แล้วบอทจึงค้น Google Places และให้เลือกสถานที่
-- เมื่อเลือกสถานที่ บอทบันทึก `place_id`, ชื่อ และที่อยู่ไว้กับรายการ พร้อมส่ง Google Maps URL
-- คำสั่ง `รายการ` แสดงปุ่ม `Map` ข้างร้านที่มีลิงก์แผนที่แล้ว
-- รายการและ state เพิ่มแผนที่แยกตาม chat ID เสมอ
-
-## คำสั่ง
+การ deploy ปัจจุบันบน Render ยังทำงานได้ ระหว่างย้ายให้ใช้ Cloudflare ตามโครงสร้างนี้:
 
 ```text
-@เมื่อไรจะไปกิน
+LINE Messaging API -> Cloudflare Worker -> Supabase REST/RPC -> Supabase PostgreSQL
+                              |
+                              +-> LIFF private flow (/liff)
+                              +-> Google Places Text Search (เฉพาะค้นหาสาขา)
+```
+
+Worker ไม่มี `pg.Pool` และไม่เปิด TCP connection ไป Postgres โดยตรง แต่ใช้ Supabase REST และ RPC ผ่าน `@supabase/supabase-js` แทน จึงเหมาะกับ Cloudflare Workers ที่เป็น stateless request runtime.
+
+## User flows
+
+คำสั่งตรงเป็น public: ทุกคนในแชตเห็นผลลัพธ์
+
+```text
+@เมื่อไรจะไปกิน เพิ่ม Shabushi
+@เมื่อไรจะไปกิน ลบ Shabushi
+@เมื่อไรจะไปกิน กิน Shabushi มาแล้ว
 @เมื่อไรจะไปกิน รายการ
-@เมื่อไรจะไปกิน เพิ่ม Sushiro
-@เมื่อไรจะไปกิน อยากกิน Hotpot Man
-@เมื่อไรจะไปกิน เพิ่มแผนที่ Sushiro
-@เมื่อไรจะไปกิน ลบ Sushiro
-@เมื่อไรจะไปกิน กิน Sushiro มาแล้ว
+@เมื่อไรจะไปกิน เพิ่มแผนที่ Shabushi
 ```
 
-การพิมพ์ `รายการ`, `เพิ่ม ...` หรือชื่อร้านโดยไม่ mention บอทจะไม่ทำให้บอทตอบ
+คำสั่งแผนที่รองรับ `เพิ่มแผนที่`, `เพิ่มลิงก์แผนที่`, `เพิ่มลิงก์` และ `ใส่ลิงก์`.
 
-## Google Places และการคุมค่าใช้จ่าย
+- เพิ่ม/ลบ/รายการ: บันทึกหรือแสดงใน chat นั้นทันที โดยไม่เรียก Google
+- เพิ่มแผนที่: เปิด LIFF เฉพาะผู้สั่ง เลือกตำแหน่งจากตำแหน่งปัจจุบันหรือ Maps picker, ค้น Google Places, เลือกสาขา แล้วค่อยประกาศรายการอัปเดตใน chat
+- mention เปล่า `@เมื่อไรจะไปกิน`: LINE ต้องแนบ Quick Reply กับข้อความหนึ่งข้อความเสมอ Worker จึงส่งข้อความ zero-width ที่ไม่มีคำบรรยาย พร้อมปุ่มเปิด LIFF ของผู้กด
+- LIFF session ถูกผูกกับ `chat_id + owner_user_id`; คนอื่นที่ได้ URL ไปจะอ่านหรือบันทึกแทนไม่ได้
 
-Google Places ไม่ถูกเรียกขณะเพิ่มร้าน การค้นหาจะเกิดขึ้นเมื่อผู้ใช้เพิ่มลิงก์แผนที่และกดส่งตำแหน่งใน LINE เท่านั้น:
-
-```text
-เพิ่มร้าน -> เพิ่มแผนที่ -> ส่งตำแหน่ง -> จองโควต้ารายวัน -> Google Places Text Search -> เลือกสถานที่
-```
-
-- `GOOGLE_DAILY_VALIDATION_LIMIT`: เพดาน Google validations รวมทุกแชตต่อวัน
-- `GOOGLE_GROUP_DAILY_VALIDATION_LIMIT`: เพดานต่อ group, room หรือแชตส่วนตัวต่อวัน
-- การจองโควต้าเป็น atomic ใน Postgres เพื่อไม่ให้หลายแชตทำให้เกินเพดานพร้อมกัน
-- Google Text Search ขอผลสูงสุด 3 สถานที่ โดยใช้ตำแหน่งที่ผู้ใช้ส่งเป็น location bias
-- Google response ที่ใช้คือ place ID, ชื่อร้าน, ที่อยู่ และประเภทสถานที่
-- หลังส่ง location บอทแสดงตัวเลือกสาขาเป็น Flex Message
-- ไม่เรียก Place Details, รูปภาพ, rating หรือเวลาเปิดปิด
-
-### Google Maps links
-
-หลังผู้ใช้เลือกสถานที่ บอทจะส่ง Google Maps URL ที่ระบุสถานที่นั้น เช่น:
-
-```text
-https://www.google.com/maps/search/?api=1&query=<encoded-name>&query_place_id=<place-id>
-```
-
-Maps URLs ไม่ต้องใช้ Google API key เพิ่มเติม และ Place ID ทำให้ลิงก์ชี้ไปยังสถานที่ที่ถูกต้องได้มากกว่าการใช้ชื่อร้านอย่างเดียว. LINE จะขอสิทธิ์ location เฉพาะเมื่อผู้ใช้กด `ส่งตำแหน่ง`; บอทไม่สามารถเปิดตำแหน่งเองได้. ดู [Google Maps URLs](https://developers.google.com/maps/documentation/urls/get-started) และ [Text Search (New)](https://developers.google.com/maps/documentation/places/web-service/text-search).
-
-## ข้อมูลที่จัดเก็บ
-
-ข้อมูลถูกแยกตาม LINE chat:
+ข้อมูล chat key:
 
 - group: `group:<groupId>`
 - multi-person room: `room:<roomId>`
 - direct chat: `user:<userId>`
 
-แอปสร้างตารางต่อไปนี้อัตโนมัติเมื่อเริ่มทำงาน:
+## Google Maps cost control
 
-- `restaurant_items`: รายการร้านต่อ chat
-- `google_call_log`: ตัวนับโควต้าการเรียก Google รายวัน
-- `pending_command_inputs`: action จาก Flex menu ที่กำลังรอชื่อร้าน
-- `pending_map_link_selections`: รายการที่กำลังรอ location เพื่อค้นหาสถานที่
-- `pending_map_link_candidates`: สถานที่ที่รอผู้ใช้กดเลือก
-
-## Environment variables
-
-สร้าง `.env` จาก `.env.example` สำหรับ local development ห้าม commit `.env`
-
-```env
-PORT=3000
-DATABASE_URL=
-POSTGRES_SSL=true
-
-LINE_CHANNEL_SECRET=
-LINE_CHANNEL_ACCESS_TOKEN=
-BOT_DISPLAY_NAME=เมื่อไรจะไปกิน
-
-GOOGLE_MAPS_API_KEY=
-GOOGLE_REGION_CODE=TH
-GOOGLE_LANGUAGE_CODE=th
-GOOGLE_DAILY_VALIDATION_LIMIT=100
-GOOGLE_GROUP_DAILY_VALIDATION_LIMIT=30
-```
-
-## LINE Messaging API
-
-รับค่าต่อไปนี้จาก LINE Developers Console:
-
-- `LINE_CHANNEL_SECRET`: Messaging API channel > Basic settings > Channel secret
-- `LINE_CHANNEL_ACCESS_TOKEN`: Messaging API channel > Messaging API > Channel access token
-
-เปิดค่าเหล่านี้ด้วย:
-
-- Use webhook
-- Allow bot to join group chats
-- Auto-reply messages: Disabled
-
-ตั้ง webhook หลัง deploy:
+เพิ่มร้านไม่เรียก Google. Google Places Text Search (New) เกิดเฉพาะหลังผู้ใช้เลือกตำแหน่งใน LIFF เพื่อหา branch สำหรับผูก Maps link.
 
 ```text
-https://YOUR_RENDER_DOMAIN/line/webhook
+เพิ่มร้าน -> เพิ่มแผนที่ -> เลือกตำแหน่ง -> reserve quota (RPC) -> Text Search -> เลือกสาขา
 ```
 
-## Google Places API
+- `GOOGLE_DAILY_VALIDATION_LIMIT`: เพดานทุก chat ต่อวัน
+- `GOOGLE_GROUP_DAILY_VALIDATION_LIMIT`: เพดานต่อ chat ต่อวัน
+- `bot_reserve_google_call` ใช้ advisory lock ใน Postgres จึงกัน concurrent request เกินเพดานได้
+- ผลค้นหาเก็บ `place_id`, ชื่อ, ที่อยู่ และ types ไว้กับรายการ
+- Maps URL ไม่เรียก API: `https://www.google.com/maps/search/?api=1&query=<name>&query_place_id=<place-id>`
+- `MAPS_BROWSER_KEY` ใช้เฉพาะการเปิด map picker ใน LIFF และต้องจำกัดด้วย HTTP referrer เมื่อทราบ Worker URL แล้ว
 
-1. สร้างหรือเลือก Google Cloud project
-2. เปิด Places API
-3. สร้าง API key ที่ APIs & Services > Credentials
-4. จำกัด key ให้ใช้กับ Places API
-5. ตั้ง budget alert และ quota ใน Google Cloud
+## Supabase setup
 
-## Supabase
+1. เปิด Supabase project > SQL Editor
+2. วางและ Run ไฟล์ [202608010001_cloudflare_liff.sql](supabase/migrations/202608010001_cloudflare_liff.sql)
+3. Project Settings > API: เก็บ `Project URL` และ `service_role` key ไว้สำหรับ Worker secret เท่านั้น
 
-1. สร้าง Supabase project
-2. กด Connect บน project dashboard
-3. ใช้ Session pooler connection string (port `5432`) สำหรับ Render
-4. ตั้งค่า `DATABASE_URL` และ `POSTGRES_SSL=true` ใน Render
+Migration สร้างตาราง `restaurant_items`, `google_call_log`, `liff_flow_sessions`, `liff_map_candidates` และ RPC สองตัว:
 
-ไม่ต้องสร้างตารางเอง แอปจะ migration schema เมื่อเริ่มทำงาน
+- `bot_reserve_google_call`: นับ quota Google แบบ atomic
+- `bot_take_liff_flow_session`: ใช้ session ได้ครั้งเดียว
 
-## Local development
+RLS ถูกเปิดโดยไม่มี anonymous policy. LIFF ไม่ติดต่อ Supabase โดยตรง; Worker เท่านั้นที่ใช้ service-role secret.
+
+## Cloudflare Worker deployment
+
+ลำดับนี้มี deploy สองครั้ง เพราะต้องมี Worker URL ก่อนจึงจะ register LIFF endpoint ได้:
 
 ```bash
-npm install
-cp .env.example .env
+npm ci
 npm test
-npm run dev
+npx wrangler login
+npx wrangler secret put LINE_CHANNEL_SECRET
+npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
+npx wrangler secret put SUPABASE_URL
+npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+npx wrangler secret put LIFF_ID # ใส่ pending ชั่วคราวสำหรับ deploy ครั้งแรก
+npx wrangler secret put GOOGLE_MAPS_API_KEY
+npx wrangler secret put MAPS_BROWSER_KEY
+npx wrangler secret put BOT_DISPLAY_NAME
+npx wrangler deploy
 ```
 
-ตรวจ health endpoint:
+สำหรับ local Worker ให้ copy `.dev.vars.example` เป็น `.dev.vars`; ห้าม commit `.dev.vars`.
 
-```text
-http://localhost:3000/health
+หลัง deploy จะได้ Worker URL รูปแบบ `https://eatarai.<account-subdomain>.workers.dev`.
+
+1. Deploy Worker ครั้งแรก แล้วจด URL ที่ได้
+2. ใน LINE Developers สร้าง LIFF app ภายใต้ LINE Login channel โดยใช้ Endpoint URL `https://eatarai.<account-subdomain>.workers.dev/liff`
+3. ใส่ LIFF ID ที่ได้แทนค่า `pending`: `npx wrangler secret put LIFF_ID`
+4. ตั้ง Maps browser key referrer เป็น `https://eatarai.<account-subdomain>.workers.dev/*` และ API restriction เป็น Maps JavaScript API เท่านั้น
+5. ตั้ง LINE Messaging API Webhook URL เป็น `https://eatarai.<account-subdomain>.workers.dev/line/webhook` แล้วกด Verify
+6. ทดสอบคำสั่ง public และ LIFF map flow ใน group ทดสอบ ก่อนปิด Render
+
+Cloudflare Worker URL เป็น public endpoint ไม่ใช่ credential. ห้ามเผยแพร่ Channel secret, access token, Supabase service-role key หรือ Google server API key.
+
+## Existing Render service
+
+Render ยังใช้ `DATABASE_URL` ผ่าน `pg.Pool`; เก็บไว้เป็น rollback ระหว่าง cutover ได้. เมื่อ Worker ทดสอบครบแล้วจึงเปลี่ยน LINE webhook ไป Worker และ suspend Render ภายหลัง.
+
+## Validation
+
+```bash
+npm test
+npx wrangler deploy --dry-run
 ```
-
-## Render deployment
-
-สร้าง Render Web Service จาก GitHub repository:
-
-- Build command: `npm install && npm run build`
-- Start command: `npm start`
-- Health check path: `/health`
-
-ตั้ง environment variables ชุดเดียวกับ `.env.example` ใน Render แล้วนำ Render URL ไปตั้งเป็น LINE webhook

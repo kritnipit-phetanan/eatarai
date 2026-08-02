@@ -16,7 +16,7 @@ export function parseCommand(rawText: string, botDisplayName: string, isBotMenti
   const remove = matchRemove(text);
   if (remove) return { kind: "remove", item: remove };
 
-  const mapLink = matchPrefix(text, ["เพิ่มแผนที่"]);
+  const mapLink = matchPrefix(text, ["เพิ่มแผนที่", "เพิ่มลิงก์แผนที่", "เพิ่มลิงก์", "ใส่ลิงก์"]);
   if (mapLink) return { kind: "map_link", item: mapLink };
 
   const explicitAdd = matchPrefix(text, ["เพิ่ม", "อยากกิน", "+"]);
