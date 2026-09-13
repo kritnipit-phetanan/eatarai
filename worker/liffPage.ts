@@ -78,7 +78,7 @@ export function renderLiffPage(liffId: string, mapsBrowserKey: string | undefine
           const result = await api("/api/liff/map-search", { method: "POST", body: JSON.stringify({ sessionId, latitude: position.coords.latitude, longitude: position.coords.longitude }) });
           candidates.replaceChildren(...result.candidates.map((candidate) => {
             const button = document.createElement("button"); button.className = "candidate";
-            button.textContent = [candidate.name, candidate.address].filter(Boolean).join("\n");
+            button.textContent = [candidate.name, candidate.address].filter(Boolean).join("\\n");
             button.onclick = () => complete({ candidateId: candidate.id }); return button;
           }));
           setStatus(result.candidates.length ? "เลือกสถานที่ที่ต้องการ" : "ไม่พบสถานที่ใกล้ตำแหน่งนี้");
