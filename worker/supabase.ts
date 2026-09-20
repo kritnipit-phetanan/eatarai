@@ -2,6 +2,8 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { normalizeText } from "../src/normalize.js";
 import type { ChatListPublisher } from "./chatListPublisher.js";
 
+export const liffSessionTtlMs = 20 * 60 * 1000;
+
 export interface WorkerEnv {
   LINE_CHANNEL_SECRET: string;
   LINE_CHANNEL_ACCESS_TOKEN: string;
@@ -53,6 +55,8 @@ export interface LiffMapCandidateRow {
   types_json: string;
   expires_at: string;
 }
+
+export type LiffMapSearchReservation = "reserved" | "rate_limited" | "google_quota_reached" | "invalid_session";
 
 export function supabase(env: WorkerEnv): SupabaseClient {
   const isNewSecretKey = env.SUPABASE_SERVICE_ROLE_KEY.startsWith("sb_secret_");
@@ -160,7 +164,7 @@ export async function createLiffSession(
   itemName: string | null = null
 ): Promise<LiffFlowSessionRow> {
   const id = crypto.randomUUID();
-  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + liffSessionTtlMs).toISOString();
   const { data, error } = await client
     .from("liff_flow_sessions")
     .insert({ id, chat_id: chatId, owner_user_id: ownerUserId, action, item_name: itemName, expires_at: expiresAt })
@@ -241,4 +245,30 @@ export async function reserveGoogleCall(client: SupabaseClient, chatId: string, 
   });
   if (error) throw new Error(`Reserve Google quota failed: ${error.message}`);
   return data === true;
+}
+
+export async function reserveLiffMapSearch(
+  client: SupabaseClient,
+  session: LiffFlowSessionRow,
+  globalLimit: number,
+  groupLimit: number
+): Promise<LiffMapSearchReservation> {
+  const { data, error } = await client.rpc("bot_reserve_liff_map_search", {
+    p_session_id: session.id,
+    p_owner_user_id: session.owner_user_id,
+    p_chat_id: session.chat_id,
+    p_global_limit: globalLimit,
+    p_group_limit: groupLimit,
+    p_cooldown_seconds: 15
+  });
+  if (error) throw new Error(`Reserve LIFF map search failed: ${error.message}`);
+  return data as LiffMapSearchReservation;
+}
+
+export async function cleanupExpiredLiffData(client: SupabaseClient, cutoff: string): Promise<void> {
+  const { error: sessionError } = await client.from("liff_flow_sessions").delete().lt("expires_at", cutoff);
+  if (sessionError) throw new Error(`Clean expired LIFF sessions failed: ${sessionError.message}`);
+
+  const { error: rateLimitError } = await client.from("liff_map_search_rate_limits").delete().lt("last_search_at", cutoff);
+  if (rateLimitError) throw new Error(`Clean LIFF map search limits failed: ${rateLimitError.message}`);
 }

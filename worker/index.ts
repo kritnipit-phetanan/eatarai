@@ -9,6 +9,7 @@ import { getChatId, getLineMemberDisplayName, getLineProfile, getLineTargetId, r
 import {
   addItem,
   addPlaceItem,
+  cleanupExpiredLiffData,
   consumeLiffSession,
   createLiffSession,
   findItem,
@@ -17,7 +18,8 @@ import {
   listItems,
   removeItems,
   removeItem,
-  reserveGoogleCall,
+  reserveLiffMapSearch,
+  liffSessionTtlMs,
   supabase,
   type LiffFlowSessionRow,
   type LiffMapCandidateRow,
@@ -27,17 +29,20 @@ import {
 const jsonHeaders = { "Content-Type": "application/json; charset=utf-8" };
 
 export default {
-  async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: WorkerEnv): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") return json({ ok: true });
     if (request.method === "GET" && url.pathname === "/liff") return new Response(renderLiffPage(env.LIFF_ID), { headers: { "Content-Type": "text/html; charset=utf-8" } });
     if (url.pathname.startsWith("/api/liff/")) return handleLiffApi(request, env, url);
-    if (request.method === "POST" && url.pathname === "/line/webhook") return handleWebhook(request, env, ctx);
+    if (request.method === "POST" && url.pathname === "/line/webhook") return handleWebhook(request, env);
     return json({ error: "not_found" }, 404);
+  },
+  async scheduled(_event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(cleanupLiffData(env));
   }
 } satisfies ExportedHandler<WorkerEnv>;
 
-async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
+async function handleWebhook(request: Request, env: WorkerEnv): Promise<Response> {
   const rawBody = await request.text();
   console.log(JSON.stringify({ event: "line_webhook_arrived", bodySize: rawBody.length }));
   const valid = await verifyLineSignature(rawBody, request.headers.get("x-line-signature"), env.LINE_CHANNEL_SECRET);
@@ -49,13 +54,12 @@ async function handleWebhook(request: Request, env: WorkerEnv, ctx: ExecutionCon
   const payload = JSON.parse(rawBody) as { events?: WorkerLineEvent[] };
   const events = payload.events ?? [];
   console.log(JSON.stringify({ event: "line_webhook_received", eventCount: events.length }));
-  ctx.waitUntil(Promise.all(events.map(async (event) => {
-    try {
-      await handleLineEvent(event, env);
-    } catch (error) {
-      console.error(JSON.stringify({ event: "line_event_failed", error: String(error) }));
-    }
-  })));
+  try {
+    await Promise.all(events.map((event) => handleLineEvent(event, env)));
+  } catch (error) {
+    console.error(JSON.stringify({ event: "line_event_failed", error: String(error) }));
+    return json({ error: "event_processing_failed" }, 500);
+  }
   return json({ ok: true });
 }
 
@@ -205,9 +209,12 @@ async function searchMapCandidates(
   session: LiffFlowSessionRow,
   payload: LiffPayload
 ): Promise<Response> {
-  if (payload.latitude === undefined || payload.longitude === undefined) return corsJson({ error: "invalid_map_search" }, 400);
+  if (
+    typeof payload.latitude !== "number" || !Number.isFinite(payload.latitude) || payload.latitude < -90 || payload.latitude > 90 ||
+    typeof payload.longitude !== "number" || !Number.isFinite(payload.longitude) || payload.longitude < -180 || payload.longitude > 180
+  ) return corsJson({ error: "invalid_map_search" }, 400);
   let itemId: number | null = null;
-  let query = payload.query?.trim() ?? "";
+  let query = typeof payload.query === "string" ? payload.query.trim() : "";
   if (session.action === "map_link") {
     if (!session.item_name) return corsJson({ error: "invalid_map_search" }, 400);
     const item = await findItem(client, session.chat_id, session.item_name);
@@ -217,8 +224,16 @@ async function searchMapCandidates(
   } else if (session.action !== "add" || !query) {
     return corsJson({ error: "invalid_map_search" }, 400);
   }
-  const reserved = await reserveGoogleCall(client, session.chat_id, numericEnv(env.GOOGLE_DAILY_VALIDATION_LIMIT, 500), numericEnv(env.GOOGLE_GROUP_DAILY_VALIDATION_LIMIT, 30));
-  if (!reserved) return corsJson({ error: "google_quota_reached" }, 429);
+  if (query.length > 120) return corsJson({ error: "query_too_long" }, 400);
+  const reservation = await reserveLiffMapSearch(
+    client,
+    session,
+    numericEnv(env.GOOGLE_DAILY_VALIDATION_LIMIT, 500),
+    numericEnv(env.GOOGLE_GROUP_DAILY_VALIDATION_LIMIT, 30)
+  );
+  if (reservation === "rate_limited") return corsJson({ error: "map_search_rate_limited" }, 429);
+  if (reservation === "google_quota_reached") return corsJson({ error: "google_quota_reached" }, 429);
+  if (reservation !== "reserved") return corsJson({ error: "invalid_or_expired_session" }, 409);
   const places = await new FetchGooglePlacesClient().searchLocations(query, payload.latitude, payload.longitude, {
     apiKey: env.GOOGLE_MAPS_API_KEY, regionCode: env.GOOGLE_REGION_CODE ?? "TH", languageCode: env.GOOGLE_LANGUAGE_CODE ?? "th"
   });
@@ -227,7 +242,7 @@ async function searchMapCandidates(
     const { error } = await client.from("liff_map_candidates").insert({
       id, session_id: session.id, item_id: itemId, requested_name: query, place_id: place.placeId, display_name: place.displayName,
       formatted_address: place.formattedAddress, primary_type: place.primaryType, types_json: JSON.stringify(place.types),
-      expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+      expires_at: new Date(Date.now() + liffSessionTtlMs).toISOString()
     });
     if (error) throw new Error(`Save map candidate failed: ${error.message}`);
     return { id, name: place.displayName, address: place.formattedAddress };
@@ -321,6 +336,16 @@ function uriQuickReply(label: string, uri: string): Record<string, unknown> { re
 function liffUri(env: WorkerEnv, sessionId: string): string { return `https://liff.line.me/${encodeURIComponent(env.LIFF_ID)}?session=${encodeURIComponent(sessionId)}`; }
 function isMaintenanceMode(env: WorkerEnv): boolean { return ["1", "true", "yes", "on"].includes(env.BOT_MAINTENANCE_MODE?.trim().toLowerCase() ?? ""); }
 function numericEnv(value: string | undefined, fallback: number): number { const parsed = Number(value); return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback; }
+async function cleanupLiffData(env: WorkerEnv): Promise<void> {
+  const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  try {
+    await cleanupExpiredLiffData(supabase(env), cutoff);
+    console.log(JSON.stringify({ event: "liff_data_cleaned", cutoff }));
+  } catch (error) {
+    console.error(JSON.stringify({ event: "liff_data_cleanup_failed", error: String(error) }));
+    throw error;
+  }
+}
 function json(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: jsonHeaders }); }
 function corsJson(body: unknown, status = 200): Response { return new Response(JSON.stringify(body), { status, headers: { ...jsonHeaders, ...corsHeaders() } }); }
 function corsHeaders(): Record<string, string> { return { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Allow-Methods": "GET, POST, OPTIONS" }; }

@@ -86,6 +86,8 @@ export function renderLiffPage(liffId: string): string {
     function setStatus(value) { status.textContent = value; }
     function userFacingError(code) {
       if (code === "google_quota_reached") return "โควต้าค้นหาสถานที่วันนี้เต็มแล้ว ลองใหม่พรุ่งนี้";
+      if (code === "map_search_rate_limited") return "กรุณารอ 15 วินาทีก่อนค้นหาอีกครั้ง";
+      if (code === "query_too_long") return "ชื่อร้านหรืออาหารยาวเกินไป";
       if (code === "maintenance_mode") return "ระบบกำลังปรับปรุงชั่วคราว กรุณาลองใหม่ภายหลัง";
       if (code === "restaurant_not_found") return "ไม่เจอร้านนี้ในรายการของแชตนี้";
       if (code === "session_owned_by_another_user") return "เมนชัน @เมื่อไรจะไปกิน เพื่อเปิดเมนูของคุณเอง";

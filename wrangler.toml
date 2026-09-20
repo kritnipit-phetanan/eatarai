@@ -2,6 +2,9 @@ name = "eatarai"
 main = "worker/index.ts"
 compatibility_date = "2026-08-01"
 
+[triggers]
+crons = ["0 19 * * *"]
+
 [[durable_objects.bindings]]
 name = "CHAT_LIST_PUBLISHER"
 class_name = "ChatListPublisher"
