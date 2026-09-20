@@ -1,7 +1,10 @@
 node_modules/
 dist/
+.wrangler/
+graphify-out/
 data/*.sqlite
 data/*.sqlite-*
 .env
 .dev.vars
 .DS_Store
+*.log
