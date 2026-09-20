@@ -9,6 +9,7 @@ describe("parseCommand", () => {
   it("recognizes only an exact @bot-name text prefix for the fallback", () => {
     assert.equal(hasBotMentionPrefix("@เมื่อไรจะไปกิน เพิ่ม Sukishi", BOT), true);
     assert.equal(hasBotMentionPrefix("@เมื่อไรจะไปกิน", BOT), true);
+    assert.equal(hasBotMentionPrefix("@เมื่อไรจะไปกินลบMidori", BOT), true);
     assert.equal(hasBotMentionPrefix("เมื่อไรจะไปกิน เพิ่ม Sukishi", BOT), false);
     assert.equal(hasBotMentionPrefix("@เมื่อไรจะไปกินนะ เพิ่ม Sukishi", BOT), false);
     assert.equal(hasBotMentionPrefix("มาคุยกับ @เมื่อไรจะไปกิน เพิ่ม Sukishi", BOT), false);
@@ -50,7 +51,16 @@ describe("parseCommand", () => {
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน กิน Sukishi แล้ว", BOT, true), { kind: "remove", item: "Sukishi" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน กิน Sukishi มาแล้ว", BOT, true), { kind: "remove", item: "Sukishi" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน ลบ Hotpot Man", BOT, true), { kind: "remove", item: "Hotpot Man" });
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกินลบMidori", BOT, true), { kind: "remove", item: "Midori" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน ยืนยัน Central World", BOT, true), { kind: "ignore" });
+  });
+
+  it("accepts add commands without a space after the mention or command", () => {
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกินเพิ่มMidori", BOT, true), {
+      kind: "add",
+      item: "Midori",
+      source: "explicit"
+    });
   });
 
   it("parses map commands only when the bot is mentioned", () => {

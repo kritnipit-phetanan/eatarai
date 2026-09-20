@@ -14,6 +14,13 @@ export interface WorkerLineEvent {
   };
 }
 
+export interface LineSource {
+  type?: "group" | "room" | "user";
+  groupId?: string;
+  roomId?: string;
+  userId?: string;
+}
+
 export async function verifyLineSignature(rawBody: string, signature: string | null, secret: string): Promise<boolean> {
   if (!signature || !secret) return false;
 
@@ -50,7 +57,11 @@ export function getLineTargetId(chatId: string): string | null {
 }
 
 export async function replyLine(token: string, replyToken: string, message: Record<string, unknown>): Promise<void> {
-  await callLine("https://api.line.me/v2/bot/message/reply", token, { replyToken, messages: [message] });
+  await replyLineMessages(token, replyToken, [message]);
+}
+
+export async function replyLineMessages(token: string, replyToken: string, messages: Record<string, unknown>[]): Promise<void> {
+  await callLine("https://api.line.me/v2/bot/message/reply", token, { replyToken, messages });
 }
 
 export async function pushLine(token: string, to: string, message: Record<string, unknown>): Promise<void> {
@@ -65,6 +76,29 @@ export async function getLineProfile(accessToken: string): Promise<{ userId: str
   const payload = await response.json() as { userId?: string };
   if (!payload.userId) throw new Error("LIFF profile response has no userId");
   return { userId: payload.userId };
+}
+
+export async function getLineMemberDisplayName(token: string, source: LineSource | undefined): Promise<string | null> {
+  const userId = source?.userId;
+  if (!userId) return null;
+
+  let url: string;
+  if (source.type === "group" && source.groupId) {
+    url = `https://api.line.me/v2/bot/group/${encodeURIComponent(source.groupId)}/member/${encodeURIComponent(userId)}`;
+  } else if (source.type === "room" && source.roomId) {
+    url = `https://api.line.me/v2/bot/room/${encodeURIComponent(source.roomId)}/member/${encodeURIComponent(userId)}`;
+  } else {
+    url = `https://api.line.me/v2/bot/profile/${encodeURIComponent(userId)}`;
+  }
+
+  try {
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) return null;
+    const profile = await response.json() as { displayName?: string };
+    return profile.displayName ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function callLine(url: string, token: string, body: unknown): Promise<void> {

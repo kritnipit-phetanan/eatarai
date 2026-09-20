@@ -32,7 +32,7 @@ export function parseCommand(rawText: string, botDisplayName: string, isBotMenti
 function matchPrefix(text: string, prefixes: string[]): string | null {
   for (const prefix of prefixes) {
     if (text === prefix) return null;
-    if (text.startsWith(`${prefix} `)) {
+    if (text.startsWith(prefix)) {
       const item = text.slice(prefix.length).trim();
       return item || null;
     }

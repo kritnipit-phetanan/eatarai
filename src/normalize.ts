@@ -11,7 +11,7 @@ export function stripBotMention(text: string, botDisplayName: string): { mention
       return { mentioned: true, text: "" };
     }
 
-    if (trimmed.startsWith(`${name} `)) {
+    if (trimmed.startsWith(name)) {
       return { mentioned: true, text: trimmed.slice(name.length).trim() };
     }
   }
@@ -22,5 +22,7 @@ export function stripBotMention(text: string, botDisplayName: string): { mention
 export function hasBotMentionPrefix(text: string, botDisplayName: string): boolean {
   const name = `@${botDisplayName}`;
   const trimmed = text.trim();
-  return trimmed === name || trimmed.startsWith(`${name} `);
+  if (!trimmed.startsWith(name)) return false;
+  const remainder = trimmed.slice(name.length);
+  return remainder === "" || /^\s/.test(remainder) || ["เพิ่ม", "อยากกิน", "ลบ", "กิน", "รายการ", "+"].some((command) => remainder.startsWith(command));
 }

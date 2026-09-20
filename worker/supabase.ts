@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { normalizeText } from "../src/normalize.js";
+import type { ChatListPublisher } from "./chatListPublisher.js";
 
 export interface WorkerEnv {
   LINE_CHANNEL_SECRET: string;
@@ -14,6 +15,8 @@ export interface WorkerEnv {
   GOOGLE_LANGUAGE_CODE?: string;
   GOOGLE_DAILY_VALIDATION_LIMIT?: string;
   GOOGLE_GROUP_DAILY_VALIDATION_LIMIT?: string;
+  BOT_MAINTENANCE_MODE?: string;
+  CHAT_LIST_PUBLISHER: DurableObjectNamespace<ChatListPublisher>;
 }
 
 export interface RestaurantItemRow {
@@ -39,10 +42,31 @@ export interface LiffFlowSessionRow {
   used_at: string | null;
 }
 
+export interface LiffMapCandidateRow {
+  id: string;
+  session_id: string;
+  item_id: number | null;
+  place_id: string;
+  display_name: string | null;
+  formatted_address: string | null;
+  primary_type: string | null;
+  types_json: string;
+  expires_at: string;
+}
+
 export function supabase(env: WorkerEnv): SupabaseClient {
+  const isNewSecretKey = env.SUPABASE_SERVICE_ROLE_KEY.startsWith("sb_secret_");
   return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false }
+    auth: { autoRefreshToken: false, persistSession: false },
+    // New Supabase secret keys are API keys, not JWTs. The SDK otherwise adds them as Bearer tokens for REST calls.
+    global: isNewSecretKey ? { fetch: fetchWithoutAuthorization } : undefined
   });
+}
+
+async function fetchWithoutAuthorization(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  headers.delete("Authorization");
+  return fetch(input, { ...init, headers });
 }
 
 export async function listItems(client: SupabaseClient, chatId: string): Promise<RestaurantItemRow[]> {
@@ -94,6 +118,40 @@ export async function removeItem(client: SupabaseClient, chatId: string, name: s
   return (data?.length ?? 0) > 0;
 }
 
+export async function removeItems(client: SupabaseClient, chatId: string, ids: number[]): Promise<number> {
+  const uniqueIds = [...new Set(ids)].filter(Number.isInteger);
+  if (uniqueIds.length === 0) return 0;
+  const { data, error } = await client
+    .from("restaurant_items")
+    .delete()
+    .eq("chat_id", chatId)
+    .in("id", uniqueIds)
+    .select("id");
+  if (error) throw new Error(`Remove restaurants failed: ${error.message}`);
+  return data?.length ?? 0;
+}
+
+export async function addPlaceItem(client: SupabaseClient, chatId: string, candidate: LiffMapCandidateRow): Promise<boolean> {
+  const name = candidate.display_name?.trim();
+  if (!name) throw new Error("Google place has no display name");
+
+  const { error } = await client
+    .from("restaurant_items")
+    .insert({
+      chat_id: chatId,
+      name,
+      normalized_name: normalizeText(name),
+      source: "google_places",
+      google_place_id: candidate.place_id,
+      matched_name: candidate.display_name,
+      matched_address: candidate.formatted_address,
+      matched_types_json: candidate.types_json
+    });
+  if (!error) return true;
+  if (error.code === "23505") return false;
+  throw new Error(`Add Google place failed: ${error.message}`);
+}
+
 export async function createLiffSession(
   client: SupabaseClient,
   chatId: string,
@@ -102,7 +160,7 @@ export async function createLiffSession(
   itemName: string | null = null
 ): Promise<LiffFlowSessionRow> {
   const id = crypto.randomUUID();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const { data, error } = await client
     .from("liff_flow_sessions")
     .insert({ id, chat_id: chatId, owner_user_id: ownerUserId, action, item_name: itemName, expires_at: expiresAt })
@@ -127,6 +185,23 @@ export async function getLiffSession(
     .maybeSingle();
   if (error) throw new Error(`Read LIFF session failed: ${error.message}`);
   return data as LiffFlowSessionRow | null;
+}
+
+export async function isLiffSessionOwnedByAnotherUser(
+  client: SupabaseClient,
+  id: string,
+  ownerUserId: string
+): Promise<boolean> {
+  const { data, error } = await client
+    .from("liff_flow_sessions")
+    .select("id")
+    .eq("id", id)
+    .neq("owner_user_id", ownerUserId)
+    .is("used_at", null)
+    .gt("expires_at", new Date().toISOString())
+    .maybeSingle();
+  if (error) throw new Error(`Read LIFF session owner failed: ${error.message}`);
+  return Boolean(data);
 }
 
 export async function setLiffMapItem(

@@ -2,4 +2,12 @@ name = "eatarai"
 main = "worker/index.ts"
 compatibility_date = "2026-08-01"
 
+[[durable_objects.bindings]]
+name = "CHAT_LIST_PUBLISHER"
+class_name = "ChatListPublisher"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatListPublisher"]
+
 # Set credentials with `wrangler secret put`; keep them out of this file.

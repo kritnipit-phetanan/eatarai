@@ -36,7 +36,7 @@ export class FetchGooglePlacesClient implements GooglePlacesClient {
       textQuery: query,
       regionCode: config.regionCode,
       languageCode: config.languageCode,
-      pageSize: 3,
+      pageSize: 5,
       locationBias: { circle: { center: { latitude, longitude }, radius: 50000 } }
     };
 
