@@ -50,6 +50,7 @@ describe("parseCommand", () => {
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน รายการ", BOT, true), { kind: "show" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน กิน Sukishi แล้ว", BOT, true), { kind: "remove", item: "Sukishi" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน กิน Sukishi มาแล้ว", BOT, true), { kind: "remove", item: "Sukishi" });
+    assert.deepEqual(parseCommand("@เมื่อไรจะไปกินกินSushiroแล้ว", BOT, true), { kind: "remove", item: "Sushiro" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน ลบ Hotpot Man", BOT, true), { kind: "remove", item: "Hotpot Man" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกินลบMidori", BOT, true), { kind: "remove", item: "Midori" });
     assert.deepEqual(parseCommand("@เมื่อไรจะไปกิน ยืนยัน Central World", BOT, true), { kind: "ignore" });

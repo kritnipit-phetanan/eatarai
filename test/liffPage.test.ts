@@ -15,4 +15,11 @@ describe("renderLiffPage", () => {
     assert.match(page, /เมนชัน @เมื่อไรจะไปกิน เพื่อเปิดเมนูของคุณเอง/);
     assert.match(page, /ระบบกำลังปรับปรุงชั่วคราว กรุณาลองใหม่ภายหลัง/);
   });
+
+  it("uses a five-second duplicate-search guard", () => {
+    const page = renderLiffPage("2011581201-MJaRRFyI");
+
+    assert.match(page, /const duplicateSearchWindowMs = 5000/);
+    assert.match(page, /กรุณารอ 5 วินาทีก่อนค้นหาอีกครั้ง/);
+  });
 });

@@ -44,9 +44,9 @@ function matchRemove(text: string): string | null {
   const deletePrefix = matchPrefix(text, ["ลบ"]);
   if (deletePrefix) return deletePrefix;
 
-  if (text.startsWith("กิน ")) {
-    const candidate = text.slice("กิน ".length).trim();
-    for (const suffix of [" มาแล้ว", " แล้ว"]) {
+  if (text.startsWith("กิน")) {
+    const candidate = text.slice("กิน".length).trim();
+    for (const suffix of ["มาแล้ว", "แล้ว"]) {
       if (candidate.endsWith(suffix)) {
         const item = candidate.slice(0, -suffix.length).trim();
         return item || null;

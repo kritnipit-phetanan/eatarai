@@ -12,6 +12,9 @@ export interface WorkerLineEvent {
     text?: string;
     mention?: { mentionees?: Array<{ isSelf?: boolean }> };
   };
+  postback?: {
+    data?: string;
+  };
 }
 
 export interface LineSource {
@@ -64,8 +67,8 @@ export async function replyLineMessages(token: string, replyToken: string, messa
   await callLine("https://api.line.me/v2/bot/message/reply", token, { replyToken, messages });
 }
 
-export async function pushLine(token: string, to: string, message: Record<string, unknown>): Promise<void> {
-  await callLine("https://api.line.me/v2/bot/message/push", token, { to, messages: [message] });
+export async function pushLine(token: string, to: string, message: Record<string, unknown>, retryKey?: string): Promise<void> {
+  await callLine("https://api.line.me/v2/bot/message/push", token, { to, messages: [message] }, retryKey);
 }
 
 export async function getLineProfile(accessToken: string): Promise<{ userId: string }> {
@@ -101,12 +104,17 @@ export async function getLineMemberDisplayName(token: string, source: LineSource
   }
 }
 
-async function callLine(url: string, token: string, body: unknown): Promise<void> {
+async function callLine(url: string, token: string, body: unknown, retryKey?: string): Promise<void> {
+  const headers: Record<string, string> = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+  if (retryKey) headers["X-Line-Retry-Key"] = retryKey;
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    headers,
     body: JSON.stringify(body)
   });
+  // LINE returns 409 when this retry key was already accepted. The original
+  // push may have reached LINE even though the Worker missed its response.
+  if (retryKey && response.status === 409) return;
   if (!response.ok) throw new Error(`LINE Messaging API failed: ${response.status} ${await response.text()}`);
 }
 

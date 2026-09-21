@@ -2,6 +2,14 @@ name = "eatarai"
 main = "worker/index.ts"
 compatibility_date = "2026-08-01"
 
+[observability.logs]
+enabled = true
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = false
+
 [triggers]
 crons = ["0 19 * * *"]
 

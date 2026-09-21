@@ -67,7 +67,7 @@ export class ChatListPublisher extends DurableObject<WorkerEnv> {
       return;
     }
 
-    const deliveryId = crypto.randomUUID();
+    const deliveryId = reusableDeliveryId(lock?.delivery_id, revision) ?? `${revision}:${crypto.randomUUID()}`;
     const leaseExpiresAt = now + deliveryLeaseMs;
     this.ctx.storage.sql.exec(
       "INSERT OR REPLACE INTO delivery_lock (id, delivery_id, expires_at) VALUES (1, ?, ?)",
@@ -82,7 +82,8 @@ export class ChatListPublisher extends DurableObject<WorkerEnv> {
       await pushLine(
         this.env.LINE_CHANNEL_ACCESS_TOKEN,
         target,
-        await listMessage(supabase(this.env), state.chat_id)
+        await listMessage(supabase(this.env), state.chat_id),
+        deliveryId.slice(deliveryId.indexOf(":") + 1)
       );
 
       if (this.readLock()?.delivery_id !== deliveryId) return;
@@ -101,8 +102,9 @@ export class ChatListPublisher extends DurableObject<WorkerEnv> {
         error: String(error)
       }));
       if (this.readLock()?.delivery_id === deliveryId) {
-        this.ctx.storage.sql.exec("DELETE FROM delivery_lock WHERE id = 1 AND delivery_id = ?", deliveryId);
-        await this.ctx.storage.setAlarm(Date.now() + retryDelayMs);
+        const retryAt = Date.now() + retryDelayMs;
+        this.ctx.storage.sql.exec("UPDATE delivery_lock SET expires_at = ? WHERE id = 1 AND delivery_id = ?", retryAt, deliveryId);
+        await this.ctx.storage.setAlarm(retryAt);
       }
     }
   }
@@ -118,6 +120,16 @@ export class ChatListPublisher extends DurableObject<WorkerEnv> {
       .exec<{ delivery_id: string; expires_at: number }>("SELECT delivery_id, expires_at FROM delivery_lock WHERE id = 1")
       .toArray()[0] ?? null;
   }
+}
+
+function reusableDeliveryId(deliveryId: string | undefined, revision: number): string | null {
+  if (!deliveryId) return null;
+  const [savedRevision, retryKey] = deliveryId.split(":");
+  return Number(savedRevision) === revision && isUuid(retryKey) ? deliveryId : null;
+}
+
+function isUuid(value: string | undefined): value is string {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 export async function enqueueLatestList(env: WorkerEnv, chatId: string): Promise<void> {

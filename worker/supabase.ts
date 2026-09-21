@@ -3,6 +3,7 @@ import { normalizeText } from "../src/normalize.js";
 import type { ChatListPublisher } from "./chatListPublisher.js";
 
 export const liffSessionTtlMs = 20 * 60 * 1000;
+export const liffMapSearchCooldownSeconds = 5;
 
 export interface WorkerEnv {
   LINE_CHANNEL_SECRET: string;
@@ -259,7 +260,7 @@ export async function reserveLiffMapSearch(
     p_chat_id: session.chat_id,
     p_global_limit: globalLimit,
     p_group_limit: groupLimit,
-    p_cooldown_seconds: 15
+    p_cooldown_seconds: liffMapSearchCooldownSeconds
   });
   if (error) throw new Error(`Reserve LIFF map search failed: ${error.message}`);
   return data as LiffMapSearchReservation;

@@ -1,6 +1,7 @@
 import { FetchGooglePlacesClient } from "../src/googlePlaces.js";
 import { hasBotMentionPrefix } from "../src/normalize.js";
 import { parseCommand } from "../src/parser.js";
+import { matchRestaurantName } from "../src/restaurantMatch.js";
 export { ChatListPublisher } from "./chatListPublisher.js";
 import { renderLiffPage } from "./liffPage.js";
 import { enqueueLatestList } from "./chatListPublisher.js";
@@ -17,7 +18,6 @@ import {
   isLiffSessionOwnedByAnotherUser,
   listItems,
   removeItems,
-  removeItem,
   reserveLiffMapSearch,
   liffSessionTtlMs,
   supabase,
@@ -27,6 +27,8 @@ import {
 } from "./supabase.js";
 
 const jsonHeaders = { "Content-Type": "application/json; charset=utf-8" };
+const removeConfirmationPrefix = "remove-confirm:";
+const removeConfirmationTtlMs = 15 * 60 * 1000;
 
 export default {
   async fetch(request: Request, env: WorkerEnv): Promise<Response> {
@@ -67,13 +69,23 @@ async function handleLineEvent(event: WorkerLineEvent, env: WorkerEnv): Promise<
   const chatId = getChatId(event);
   const replyToken = event.replyToken;
   const userId = event.source?.userId;
-  if (!chatId || !replyToken || !userId || event.type !== "message" || event.message?.type !== "text" || !event.message.text) {
+  if (!chatId || !replyToken || !userId) {
     console.log(JSON.stringify({
       event: "line_event_ignored",
-      reason: !chatId ? "missing_chat" : !replyToken ? "missing_reply_token" : !userId ? "missing_user" : "unsupported_event",
+      reason: !chatId ? "missing_chat" : !replyToken ? "missing_reply_token" : "missing_user",
       type: event.type,
       messageType: event.message?.type
     }));
+    return;
+  }
+
+  if (event.type === "postback" && event.postback?.data) {
+    await handlePostback(event.postback.data, env, chatId, userId, replyToken);
+    return;
+  }
+
+  if (event.type !== "message" || event.message?.type !== "text" || !event.message.text) {
+    console.log(JSON.stringify({ event: "line_event_ignored", reason: "unsupported_event", type: event.type, messageType: event.message?.type }));
     return;
   }
 
@@ -106,8 +118,7 @@ async function handleLineEvent(event: WorkerLineEvent, env: WorkerEnv): Promise<
     return;
   }
   if (command.kind === "remove") {
-    await removeItem(client, chatId, command.item);
-    await enqueueLatestList(env, chatId);
+    await handleRemoveCommand(client, env, chatId, userId, replyToken, command.item);
     return;
   }
   if (command.kind === "show") {
@@ -120,6 +131,59 @@ async function handleLineEvent(event: WorkerLineEvent, env: WorkerEnv): Promise<
     const session = await createLiffSession(client, chatId, userId, "map_link", item.name);
     await replyLine(env.LINE_CHANNEL_ACCESS_TOKEN, replyToken, liffPromptMessage("เพิ่มแผนที่", liffUri(env, session.id)));
   }
+}
+
+async function handleRemoveCommand(
+  client: ReturnType<typeof supabase>,
+  env: WorkerEnv,
+  chatId: string,
+  userId: string,
+  replyToken: string,
+  rawName: string
+): Promise<void> {
+  const matches = matchRestaurantName(await listItems(client, chatId), rawName);
+  const exact = matches.find((match) => match.exact);
+  if (exact) {
+    await removeItems(client, chatId, [exact.item.id]);
+    await enqueueLatestList(env, chatId);
+    return;
+  }
+  if (matches.length === 0) {
+    await replyLine(env.LINE_CHANNEL_ACCESS_TOKEN, replyToken, textMessage(`ไม่เจอ "${rawName}" ในลิสต์ของแชตนี้`));
+    return;
+  }
+
+  const actions = await Promise.all(matches.slice(0, 4).map(async ({ item }) => ({
+    name: item.name,
+    data: await createRemoveConfirmation(env.LINE_CHANNEL_SECRET, { chatId, userId, itemId: item.id, expiresAt: Date.now() + removeConfirmationTtlMs })
+  })));
+  await replyLine(env.LINE_CHANNEL_ACCESS_TOKEN, replyToken, removeConfirmationMessage(actions));
+}
+
+async function handlePostback(data: string, env: WorkerEnv, chatId: string, userId: string, replyToken: string): Promise<void> {
+  if (data === "remove-cancel") {
+    await replyLine(env.LINE_CHANNEL_ACCESS_TOKEN, replyToken, textMessage("ยกเลิกการลดรายการแล้ว"));
+    return;
+  }
+  if (!data.startsWith(removeConfirmationPrefix)) return;
+  if (isMaintenanceMode(env)) {
+    await replyLine(env.LINE_CHANNEL_ACCESS_TOKEN, replyToken, textMessage("ระบบกำลังปรับปรุงชั่วคราว กรุณาลองใหม่ภายหลัง"));
+    return;
+  }
+
+  const confirmation = await readRemoveConfirmation(env.LINE_CHANNEL_SECRET, data.slice(removeConfirmationPrefix.length));
+  if (!confirmation || confirmation.chatId !== chatId || confirmation.userId !== userId || confirmation.expiresAt < Date.now()) {
+    await replyLine(env.LINE_CHANNEL_ACCESS_TOKEN, replyToken, textMessage("ปุ่มนี้เป็นการยืนยันของผู้ที่สั่งลบ ให้เมนชัน @เมื่อไรจะไปกิน เพื่อเปิดเมนูของคุณเอง"));
+    return;
+  }
+
+  const client = supabase(env);
+  const removed = await removeItems(client, chatId, [confirmation.itemId]);
+  if (removed === 0) {
+    await replyLine(env.LINE_CHANNEL_ACCESS_TOKEN, replyToken, textMessage("รายการนี้ถูกลดไปแล้ว หรือไม่อยู่ในรายการล่าสุด"));
+    return;
+  }
+  await enqueueLatestList(env, chatId);
 }
 
 async function handleLiffApi(request: Request, env: WorkerEnv, url: URL): Promise<Response> {
@@ -330,6 +394,83 @@ function compactDisplayName(value: string): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   const characters = Array.from(normalized);
   return characters.length > 40 ? `${characters.slice(0, 40).join("")}…` : normalized || "คุณ";
+}
+interface RemoveConfirmation {
+  chatId: string;
+  userId: string;
+  itemId: number;
+  expiresAt: number;
+}
+async function createRemoveConfirmation(secret: string, confirmation: RemoveConfirmation): Promise<string> {
+  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify(confirmation)));
+  const signature = await signConfirmation(secret, payload);
+  return `${removeConfirmationPrefix}${payload}.${signature}`;
+}
+async function readRemoveConfirmation(secret: string, value: string): Promise<RemoveConfirmation | null> {
+  const [payload, signature, ...rest] = value.split(".");
+  if (!payload || !signature || rest.length > 0 || !(await timingSafeEqual(await signConfirmation(secret, payload), signature))) return null;
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload))) as Partial<RemoveConfirmation>;
+    if (typeof parsed.chatId !== "string" || typeof parsed.userId !== "string" || !Number.isInteger(parsed.itemId) || !Number.isFinite(parsed.expiresAt)) return null;
+    return parsed as RemoveConfirmation;
+  } catch {
+    return null;
+  }
+}
+async function signConfirmation(secret: string, payload: string): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return base64UrlEncode(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))));
+}
+async function timingSafeEqual(left: string, right: string): Promise<boolean> {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  if (leftBytes.length !== rightBytes.length) return false;
+  let mismatch = 0;
+  for (let index = 0; index < leftBytes.length; index += 1) mismatch |= leftBytes[index]! ^ rightBytes[index]!;
+  return mismatch === 0;
+}
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+function base64UrlDecode(value: string): Uint8Array {
+  const padding = "=".repeat((4 - value.length % 4) % 4);
+  const binary = atob(value.replace(/-/g, "+").replace(/_/g, "/") + padding);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+function removeConfirmationMessage(actions: Array<{ name: string; data: string }>): Record<string, unknown> {
+  const oneMatch = actions.length === 1;
+  return {
+    type: "flex",
+    altText: oneMatch ? `ยืนยันการลด ${actions[0]!.name}` : "เลือกรายการที่จะลด",
+    contents: {
+      type: "bubble",
+      size: "mega",
+      body: {
+        type: "box",
+        layout: "vertical",
+        spacing: "md",
+        contents: [
+          { type: "text", text: oneMatch ? `หมายถึง ${actions[0]!.name} ใช่ไหม?` : "พบหลายรายการที่ใกล้เคียง", weight: "bold", size: "lg", wrap: true },
+          { type: "text", text: oneMatch ? "กดยืนยันเพื่อลดรายการ" : "เลือกรายการที่ต้องการลด", size: "sm", color: "#666666", wrap: true }
+        ]
+      },
+      footer: {
+        type: "box",
+        layout: "vertical",
+        spacing: "sm",
+        contents: [
+          ...actions.map(({ name, data }) => ({ type: "button", style: "primary", action: { type: "postback", label: oneMatch ? "ตกลง" : `ลบ ${compactButtonLabel(name)}`, data } })),
+          { type: "button", style: "secondary", action: { type: "postback", label: "ยกเลิก", data: "remove-cancel" } }
+        ]
+      }
+    }
+  };
+}
+function compactButtonLabel(value: string): string {
+  const characters = Array.from(value);
+  return characters.length > 16 ? `${characters.slice(0, 15).join("")}…` : value;
 }
 function liffPromptMessage(label: string, uri: string): Record<string, unknown> { return { type: "text", text: `${label}: เปิดเมนูส่วนตัวเพื่อดำเนินการต่อ`, quickReply: { items: [uriQuickReply(label, uri)] } }; }
 function uriQuickReply(label: string, uri: string): Record<string, unknown> { return { type: "action", action: { type: "uri", label, uri } }; }
